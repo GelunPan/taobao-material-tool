@@ -1,0 +1,13 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 本地运行数据（店铺素材 JSON 与图片，不入库）
+data/
+
+# 本地回滚备份
+*.bak
+
+# IDE
+.idea/
+.vscode/

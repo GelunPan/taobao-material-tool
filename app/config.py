@@ -17,18 +17,20 @@ APP_TITLE = "淘宝评价素材整理工具"
 # ---------- 素材记录字段（顺序即表格列顺序） ----------
 RECORD_FIELDS = [
     "product_id",   # 商品ID
-    "spec_image",   # 规格图（图片）
+    "spec_image",   # 规格图（单张图片）
     "spec",         # 规格
     "title",        # 标题
-    "link_image",   # 链接主图（图片）
+    "link_image",   # 链接主图（单张图片）
     "helper",       # 补手
     "review",       # 买家秀评价
-    "image_path",   # 评价图片（图片）
+    "image_paths",  # 评价图片（多张，列表）
 ]
 TABLE_HEADERS = ["商品ID", "规格图", "规格", "标题", "链接主图", "补手", "买家秀评价", "图片"]
 
-# 图片类型字段（渲染为图片单元格）
-IMAGE_FIELDS = {"spec_image", "link_image", "image_path"}
+# 单张图片字段 / 多张图片字段（均渲染为图片单元格）
+SINGLE_IMAGE_FIELDS = {"spec_image", "link_image"}
+MULTI_IMAGE_FIELDS = {"image_paths"}
+IMAGE_FIELDS = SINGLE_IMAGE_FIELDS | MULTI_IMAGE_FIELDS
 
 # ---------- 表格列宽模式（0=自适应内容, 1=拉伸填满） ----------
 TABLE_COLUMN_MODES = [0, 0, 0, 1, 0, 0, 1, 0]
@@ -36,6 +38,8 @@ TABLE_ROW_HEIGHT = 110
 
 # ---------- 图片 ----------
 THUMBNAIL_SIZE = 100          # 表格缩略图边长
+DIALOG_THUMB_SIZE = 84        # 弹窗单图缩略图边长
+DIALOG_MULTI_SIZE = 72        # 弹窗多图缩略图边长
 FULL_IMAGE_MAX_SIZE = 800     # 查看大图最大边长
 IMAGE_EXT = "PNG"             # 粘贴图片保存格式
 

@@ -30,8 +30,18 @@ class ShopRepository:
                 data = json.load(f)
             self.shops = data.get("shops", {})
             self.image_counter = int(data.get("image_counter", 0))
+            self._migrate()
         except Exception as e:
             raise DataLoadError(f"数据加载失败：{e}") from e
+
+    def _migrate(self) -> None:
+        """旧数据迁移：单图字段 image_path(str) -> image_paths(list)"""
+        for records in self.shops.values():
+            for record in records:
+                if "image_paths" in record:
+                    continue
+                old_path = record.pop("image_path", "") or ""
+                record["image_paths"] = [old_path] if old_path else []
 
     def save(self) -> None:
         """将当前数据写入 data.json"""
@@ -69,6 +79,12 @@ class ShopRepository:
     def remove_record(self, shop_name: str, index: int) -> None:
         self.shops[shop_name].pop(index)
 
-    def set_record_image(self, shop_name: str, index: int, field_name: str, filepath: str) -> None:
-        """更新某条记录的图片字段"""
-        self.shops[shop_name][index][field_name] = filepath
+    def set_record_field(self, shop_name: str, index: int, field_name: str, value) -> None:
+        """更新某条记录的单个字段"""
+        self.shops[shop_name][index][field_name] = value
+
+    def append_record_image(self, shop_name: str, index: int, filepath: str) -> None:
+        """向某条记录的评价图片列表追加一张图片"""
+        record = self.shops[shop_name][index]
+        record.setdefault("image_paths", [])
+        record["image_paths"].append(filepath)

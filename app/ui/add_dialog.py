@@ -1,27 +1,188 @@
-"""新增素材记录弹窗"""
-import os
+"""新增/修改素材记录弹窗：文本字段 + 图片选择（单图缩略图选择器、多图添加器）。
 
+record 为 None 时是新增模式；传入已有记录时预填字段，作为修改模式。
+图片区域一律显示缩略图，不显示本地文件名。
+"""
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
+
+from ..config import DIALOG_MULTI_SIZE, DIALOG_THUMB_SIZE
+from .image_utils import scaled_pixmap
+
+IMAGE_FILTER = "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif)"
+
+_DASHED = "color:#A8ABB2; border:1px dashed #C0C4CC; border-radius:6px; background:#FAFBFC;"
+_SOLID = "border:1px solid #DCDFE6; border-radius:6px;"
+
+
+class SingleImagePicker(QWidget):
+    """单张图片选择器：缩略图 + 选择/移除按钮，不显示文件名"""
+
+    def __init__(self, size: int = DIALOG_THUMB_SIZE, parent=None):
+        super().__init__(parent)
+        self._size = size
+        self._path = ""
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+
+        self.thumb = QLabel("未选择")
+        self.thumb.setFixedSize(size, size)
+        self.thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumb.setStyleSheet(_DASHED)
+        lay.addWidget(self.thumb)
+
+        col = QVBoxLayout()
+        btn_select = QPushButton("选择图片")
+        btn_clear = QPushButton("移除")
+        btn_select.clicked.connect(self.choose)
+        btn_clear.clicked.connect(self.clear)
+        col.addWidget(btn_select)
+        col.addWidget(btn_clear)
+        col.addStretch()
+        lay.addLayout(col)
+        lay.addStretch()
+
+    def choose(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "选择图片", "", IMAGE_FILTER)
+        if path:
+            self.set_path(path)
+
+    def set_path(self, path: str) -> None:
+        self._path = path or ""
+        if self._path:
+            pixmap = scaled_pixmap(self._path, self._size)
+            if pixmap is not None:
+                self.thumb.setPixmap(pixmap)
+                self.thumb.setStyleSheet(_SOLID)
+                return
+        self.clear()
+
+    def clear(self) -> None:
+        self._path = ""
+        self.thumb.clear()
+        self.thumb.setText("未选择")
+        self.thumb.setStyleSheet(_DASHED)
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+
+class MultiImagePicker(QWidget):
+    """多张图片添加器：缩略图网格，每张可单独删除，支持一次多选添加"""
+
+    def __init__(self, size: int = DIALOG_MULTI_SIZE, columns: int = 5, parent=None):
+        super().__init__(parent)
+        self._size = size
+        self._columns = columns
+        self._paths: list[str] = []
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.grid_host = QWidget()
+        self.grid = QGridLayout(self.grid_host)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(6)
+        outer.addWidget(self.grid_host, 1)
+
+        col = QVBoxLayout()
+        self.btn_add = QPushButton("+ 添加图片")
+        self.btn_add.clicked.connect(self.choose_more)
+        col.addWidget(self.btn_add)
+        col.addStretch()
+        outer.addLayout(col)
+
+        self._rebuild()
+
+    def choose_more(self) -> None:
+        """打开多选对话框追加图片（自动去重）"""
+        paths, _ = QFileDialog.getOpenFileNames(self, "添加图片（可按住 Ctrl 多选）", "", IMAGE_FILTER)
+        if not paths:
+            return
+        existed = set(self._paths)
+        for p in paths:
+            if p not in existed:
+                self._paths.append(p)
+                existed.add(p)
+        self._rebuild()
+
+    def set_paths(self, paths: list) -> None:
+        self._paths = [p for p in (paths or []) if p]
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        if not self._paths:
+            empty = QLabel("尚未添加图片，点击右侧「添加图片」")
+            empty.setStyleSheet("color:#A8ABB2;")
+            self.grid.addWidget(empty, 0, 0)
+            return
+        for i, path in enumerate(self._paths):
+            self.grid.addWidget(self._make_thumb(i, path), i // self._columns, i % self._columns)
+
+    def _make_thumb(self, index: int, path: str) -> QWidget:
+        box = QWidget()
+        g = QGridLayout(box)
+        g.setContentsMargins(0, 0, 0, 0)
+
+        lbl = QLabel()
+        lbl.setFixedSize(self._size, self._size)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pixmap = scaled_pixmap(path, self._size)
+        if pixmap is not None:
+            lbl.setPixmap(pixmap)
+            lbl.setStyleSheet(_SOLID)
+        else:
+            lbl.setText("无效")
+            lbl.setStyleSheet(_DASHED)
+        g.addWidget(lbl, 0, 0)
+
+        btn_del = QPushButton("×")
+        btn_del.setFixedSize(20, 20)
+        btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_del.setStyleSheet(
+            "QPushButton{background:#F56C6C;color:white;border:none;border-radius:10px;font-weight:bold;}"
+            "QPushButton:hover{background:#f78989;}"
+        )
+        btn_del.clicked.connect(lambda _, i=index: self._remove(i))
+        g.addWidget(btn_del, 0, 0, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        return box
+
+    def _remove(self, index: int) -> None:
+        self._paths.pop(index)
+        self._rebuild()
+
+    @property
+    def paths(self) -> list:
+        return list(self._paths)
 
 
 class AddRecordDialog(QDialog):
-    """新增素材记录弹窗：录入文本字段并选择三张图片"""
+    """新增/修改素材记录弹窗"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, record: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("新增素材记录")
-        self.setMinimumWidth(600)
+        self.setWindowTitle("修改素材记录" if record else "新增素材记录")
+        self.setMinimumWidth(640)
         layout = QVBoxLayout(self)
 
         # ---------- 文本字段 ----------
@@ -40,37 +201,14 @@ class AddRecordDialog(QDialog):
         form_layout.addRow("买家秀评价:", self.review_input)
         layout.addLayout(form_layout)
 
-        # ---------- 图片选择 ----------
+        # ---------- 图片选择（缩略图形式） ----------
         img_layout = QFormLayout()
-        self.selected_images = {"spec": None, "link": None, "review": None}
-
-        self.spec_img_label = QLabel("未选择图片")
-        self.spec_img_label.setStyleSheet("color: #888;")
-        btn_spec_img = QPushButton("选择")
-        btn_spec_img.clicked.connect(lambda: self.select_image("spec"))
-        spec_img_layout = QHBoxLayout()
-        spec_img_layout.addWidget(self.spec_img_label)
-        spec_img_layout.addWidget(btn_spec_img)
-        img_layout.addRow("规格图:", spec_img_layout)
-
-        self.link_img_label = QLabel("未选择图片")
-        self.link_img_label.setStyleSheet("color: #888;")
-        btn_link_img = QPushButton("选择")
-        btn_link_img.clicked.connect(lambda: self.select_image("link"))
-        link_img_layout = QHBoxLayout()
-        link_img_layout.addWidget(self.link_img_label)
-        link_img_layout.addWidget(btn_link_img)
-        img_layout.addRow("链接主图:", link_img_layout)
-
-        self.review_img_label = QLabel("未选择图片")
-        self.review_img_label.setStyleSheet("color: #888;")
-        btn_review_img = QPushButton("选择")
-        btn_review_img.clicked.connect(lambda: self.select_image("review"))
-        review_img_layout = QHBoxLayout()
-        review_img_layout.addWidget(self.review_img_label)
-        review_img_layout.addWidget(btn_review_img)
-        img_layout.addRow("评价图片:", review_img_layout)
-
+        self.spec_picker = SingleImagePicker()
+        self.link_picker = SingleImagePicker()
+        self.review_picker = MultiImagePicker()
+        img_layout.addRow("规格图:", self.spec_picker)
+        img_layout.addRow("链接主图:", self.link_picker)
+        img_layout.addRow("评价图片（可多张）:", self.review_picker)
         layout.addLayout(img_layout)
 
         # ---------- 按钮 ----------
@@ -81,26 +219,35 @@ class AddRecordDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def select_image(self, img_type: str) -> None:
-        """选择图片文件并回显文件名"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择图片", "", "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif)"
-        )
-        if not file_path:
-            return
-        self.selected_images[img_type] = file_path
-        labels = {"spec": self.spec_img_label, "link": self.link_img_label, "review": self.review_img_label}
-        labels[img_type].setText(os.path.basename(file_path))
+        if record:
+            self._load_record(record)
+
+    def _load_record(self, record: dict) -> None:
+        """预填已有记录的内容（修改模式）"""
+        self.product_id_input.setText(record.get("product_id", ""))
+        self.spec_input.setText(record.get("spec", ""))
+        self.title_input.setText(record.get("title", ""))
+        self.helper_input.setText(record.get("helper", ""))
+        self.review_input.setPlainText(record.get("review", ""))
+
+        self.spec_picker.set_path(record.get("spec_image", ""))
+        self.link_picker.set_path(record.get("link_image", ""))
+        # 兼容旧版单图字段 image_path
+        paths = record.get("image_paths")
+        if paths is None:
+            old_path = record.get("image_path", "")
+            paths = [old_path] if old_path else []
+        self.review_picker.set_paths(paths)
 
     def get_data(self) -> dict:
         """获取输入的记录数据（字段名与 RECORD_FIELDS 对齐）"""
         return {
             "product_id": self.product_id_input.text().strip(),
-            "spec_image": self.selected_images.get("spec", "") or "",
+            "spec_image": self.spec_picker.path,
             "spec": self.spec_input.text().strip(),
             "title": self.title_input.text().strip(),
-            "link_image": self.selected_images.get("link", "") or "",
+            "link_image": self.link_picker.path,
             "helper": self.helper_input.text().strip(),
             "review": self.review_input.toPlainText().strip(),
-            "image_path": self.selected_images.get("review", "") or "",
+            "image_paths": self.review_picker.paths,
         }

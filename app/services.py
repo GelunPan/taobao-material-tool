@@ -49,10 +49,13 @@ class ExcelExporter:
             cell = ws.cell(row=1, column=col, value=header)
             cell.font = Font(bold=True)
 
-        # 数据行（字段顺序与列顺序一一对应）
+        # 数据行（字段顺序与列顺序一一对应；多图列表换行拼接）
         for row, record in enumerate(records, 2):
             for col, field in enumerate(RECORD_FIELDS, 1):
-                ws.cell(row=row, column=col, value=record.get(field, ""))
+                value = record.get(field, "")
+                if isinstance(value, list):
+                    value = "\n".join(str(v) for v in value)
+                ws.cell(row=row, column=col, value=value)
 
         # 列宽
         for col, width in enumerate(EXPORT_COLUMN_WIDTHS, 1):

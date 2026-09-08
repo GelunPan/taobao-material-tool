@@ -1,0 +1,18 @@
+{
+  "shops": {
+    "测试店铺1": [
+      {
+        "product_id": "测试",
+        "spec_image": "D:/Desktop/912be6c80c36a7572f3a2001ea7e844a.jpg",
+        "spec": "222",
+        "title": "333",
+        "link_image": "D:/Desktop/912be6c80c36a7572f3a2001ea7e844a.jpg",
+        "helper": "223",
+        "review": "测试1",
+        "image_path": "D:/Desktop/912be6c80c36a7572f3a2001ea7e844a.jpg"
+      }
+    ],
+    "测试店铺2": []
+  },
+  "image_counter": 0
+}

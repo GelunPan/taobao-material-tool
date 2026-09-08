@@ -1,0 +1,17 @@
+"""淘宝评价素材整理工具 - 程序入口"""
+import sys
+
+from PyQt6.QtWidgets import QApplication
+
+from app.ui.main_window import MainWindow
+
+
+def main():
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

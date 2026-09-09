@@ -123,7 +123,7 @@ class MainWindow(QMainWindow):
         self.table.selection_changed.connect(self.on_selection_changed)
         right_layout.addWidget(self.table)
 
-        tip_label = QLabel("提示：选中图片格后按 Ctrl+V 可直接粘贴截图；右键图片可查看/粘贴/删除，双击查看大图")
+        tip_label = QLabel("提示：选中图片格后按 Ctrl+V 可粘贴截图或复制的图片文件（覆盖原图）；右键图片可查看/粘贴/删除，双击查看大图")
         tip_label.setObjectName("tip")
         right_layout.addWidget(tip_label)
 
@@ -358,18 +358,18 @@ class MainWindow(QMainWindow):
         self.save_data()
 
     def on_paste_image_requested(self, row, col, field_name):
-        """处理表格中的粘贴图片请求：保存图片并更新记录"""
+        """处理表格中的粘贴图片请求：保存图片并覆盖更新记录"""
         filepath, new_counter = ImageService.save_clipboard_image(
             QApplication.clipboard(), self.repo.images_dir, self.repo.image_counter
         )
         if not filepath:
-            QMessageBox.information(self, "提示", "剪贴板中没有图片，请先截图或复制图片后按Ctrl+V")
+            QMessageBox.information(self, "提示", "剪贴板中没有图片，请先截图或复制图片文件后再按Ctrl+V")
             return
         self.repo.image_counter = new_counter
         record_index = self.table.rendered_index(row)
-        # 评价图片（多图）追加，规格图/链接主图（单图）替换
+        # 粘贴覆盖原有图片：单图列直接替换，多图列清空后只保留新粘贴的一张
         if field_name in config.MULTI_IMAGE_FIELDS:
-            self.repo.append_record_image(self.current_shop, record_index, filepath)
+            self.repo.set_record_field(self.current_shop, record_index, field_name, [filepath])
         else:
             self.repo.set_record_field(self.current_shop, record_index, field_name, filepath)
         self.refresh_table()

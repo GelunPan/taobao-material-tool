@@ -401,6 +401,20 @@ class RecordTable(QTableWidget):
         )
         return thumb
 
+    def _bind_cell_press(self, widget: QWidget, row: int, col: int) -> None:
+        """点击图片单元格内的缩略图/占位框时，手动选中该单元格并聚焦表格。
+
+        图片列里放的是 cellWidget（内部为 QLabel），它会拦截鼠标按下事件，
+        QTableWidget 因此不会自动更新 currentCell；而 Ctrl+V 粘贴正是依赖
+        currentRow()/currentColumn() 定位目标格子的，不补齐这里就会粘错位置
+        或完全失效。
+        """
+        widget.mousePressEvent = lambda event, r=row, c=col: self._select_image_cell(r, c)
+
+    def _select_image_cell(self, row: int, col: int) -> None:
+        self.setCurrentCell(row, col)
+        self.setFocus()
+
     def _bind_image_menu(self, anchor: QWidget, row: int, col: int,
                          field_name: str, paths: list, img_index: int, multi: bool) -> None:
         """给缩略图绑定右键菜单：查看大图 / 粘贴 / 删除此图"""
@@ -409,6 +423,8 @@ class RecordTable(QTableWidget):
             lambda pos, a=anchor, r=row, c=col, f=field_name, ps=paths, i=img_index, m=multi:
             self._show_image_menu(a, pos, r, c, f, ps, i, m)
         )
+        # 点击缩略图时手动选中所在单元格（cellWidget 会拦截鼠标事件，表格不会自动更新 currentCell）
+        self._bind_cell_press(anchor, row, col)
 
     def _show_image_menu(self, anchor: QWidget, pos, row: int, col: int,
                          field_name: str, paths: list, img_index: int, multi: bool) -> None:
@@ -538,6 +554,8 @@ class RecordTable(QTableWidget):
         placeholder.mouseDoubleClickEvent = (
             lambda event, r=row, c=col, f=field_name: self.image_paste_requested.emit(r, c, f)
         )
+        # 点击占位框时手动选中所在单元格，保证随后的 Ctrl+V 能正确定位
+        self._bind_cell_press(placeholder, row, col)
         placeholder.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         placeholder.customContextMenuRequested.connect(
             lambda pos, a=placeholder, r=row, c=col, f=field_name: self._show_placeholder_menu(a, pos, r, c, f)

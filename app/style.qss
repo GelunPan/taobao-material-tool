@@ -91,7 +91,7 @@ QTableWidget {
     alternate-background-color: #FAFBFC;
     border: 1px solid #E4E7ED;
     border-radius: 8px;
-    gridline-color: transparent;
+    gridline-color: #E5E8ED;
 }
 
 QTableWidget::item {
@@ -112,6 +112,11 @@ QHeaderView::section {
     border: none;
     border-bottom: 1px solid #EBEDF0;
     border-right: 1px solid #F0F1F5;
+}
+
+QHeaderView::section:hover {
+    background-color: #EEF3FA;
+    color: #409EFF;
 }
 
 QTableCornerButton::section {
@@ -260,11 +265,11 @@ QSplitter::handle {
 }
 
 QSplitter::handle:hover {
-    background-color: #E8F3FF;
+    background-color: #A0CFFF;
 }
 
 QSplitter::handle:horizontal {
-    width: 4px;
+    width: 6px;
 }
 
 QSplitter::handle:vertical {
@@ -278,4 +283,33 @@ QDialog QLabel {
 
 QDialogButtonBox QPushButton {
     min-width: 76px;
+}
+
+/* 多图单元格底部的小符号按钮（▼展开/▲收起、+添加）：统一小巧方形 */
+#imgMoreBtn, #imgAddBtn {
+    border: 1px solid #DCDFE6;
+    border-radius: 4px;
+    background: #FFFFFF;
+    color: #909399;
+    font-size: 13px;
+    font-weight: bold;
+    padding: 0;
+}
+
+#imgMoreBtn:hover, #imgAddBtn:hover {
+    border-color: #409EFF;
+    color: #409EFF;
+    background: #F5F9FF;
+}
+
+/* 新增/修改弹窗中的图片分组容器 */
+#imgGroup {
+    border: 1px solid #EBEDF0;
+    border-radius: 8px;
+    background: #FCFCFD;
+}
+
+#imgGroupTitle {
+    color: #606266;
+    font-weight: bold;
 }

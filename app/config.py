@@ -33,15 +33,19 @@ SINGLE_IMAGE_FIELDS = {"spec_image", "link_image"}
 MULTI_IMAGE_FIELDS = {"image_paths"}
 IMAGE_FIELDS = SINGLE_IMAGE_FIELDS | MULTI_IMAGE_FIELDS
 
-# ---------- 表格列宽模式（0=自适应内容, 1=拉伸填满） ----------
+# ---------- 表格列宽模式（0=按内容自适应的普通列, 1=弹性列瓜分剩余宽度） ----------
 # 顺序对应 RECORD_FIELDS；表格最前面还有一列固定宽度的“选择”列（见 SELECT_COLUMN_WIDTH）
+# 所有数据列均可手动拖拽宽度、拖动表头换位；普通列按内容收缩并夹在上下限之间，
+# 弹性列（标题/评价）自动瓜分剩余空间，窗口缩小时同步自适应缩小
 TABLE_COLUMN_MODES = [0, 0, 0, 1, 0, 0, 1, 0]
+TABLE_DEFAULT_COL_WIDTH = 90     # 普通文本列的较小默认宽度（内容更短时收缩到内容宽度）
+TABLE_SHORT_COL_MAX_WIDTH = 200  # 普通文本列按内容自适应的宽度上限，防止超长内容把列撑爆
+TABLE_STRETCH_MIN_WIDTH = 120    # 弹性列最小宽度：总空间不够时不再压缩，改为出横向滚动条
 SELECT_COLUMN_WIDTH = 48       # 最左侧勾选列宽（表头为全选复选框）
 SELECT_COL_HEADER = ""         # 勾选列表头留空（放置全选复选框）
 
-# ---------- 表格行高（随内容自适应，仅限定上下限） ----------
+# ---------- 表格行高（下限保底，高度完全随内容自适应，长文本自动换行全部展示） ----------
 TABLE_ROW_MIN_HEIGHT = 105     # 行高下限：单张缩略图(90)+单元格内边距，再补 item padding
-TABLE_ROW_MAX_HEIGHT = 360     # 行高上限：避免超长评价把单行撑满整屏（全文可悬停查看）
 
 # QSS 中 QTableWidget::item 的 padding（左右各 6、上下各 4）：cellWidget 的物理
 # 几何会被 Qt 扣除这部分内边距与 1px 网格线，尺寸换算时必须补偿，否则缩略图被裁切
@@ -57,6 +61,10 @@ TABLE_SINGLE_THUMB = 90
 TABLE_MULTI_THUMB = 74
 # 评价图片一行最多并排几张（超出自动换行，同时限制该列最大内容宽度，避免列被撑得过宽）
 TABLE_MULTI_PER_ROW = 3
+# 评价图片折叠态最多展示几张（超出出现“展开/收起”小符号按钮）
+TABLE_MULTI_VISIBLE = 5
+# 多图单元格底部小按钮行（展开/添加）的固定高度
+TABLE_MULTI_BTN_H = 24
 # 文本单元格计算换行高度时的留白：横向需扣除 item padding，纵向加少量呼吸空间
 TABLE_TEXT_HPAD = 15
 TABLE_TEXT_VPAD = 12
@@ -65,7 +73,7 @@ TABLE_TEXT_VPAD = 12
 DIALOG_THUMB_SIZE = 84        # 弹窗单图缩略图边长
 DIALOG_MULTI_SIZE = 72        # 弹窗多图缩略图边长
 FULL_IMAGE_MAX_SIZE = 800     # 查看大图最大边长
-IMAGE_EXT = "PNG"             # 粘贴图片保存格式
+IMAGE_EXT = "PNG"             # 粘贴/导入图片保存格式
 
 # ---------- Excel 导出 ----------
 EXPORT_COLUMN_WIDTHS = [15, 30, 20, 40, 30, 15, 50, 30]

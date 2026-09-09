@@ -56,12 +56,24 @@ class FlowLayout(QLayout):
     def sizeHint(self) -> QSize:
         return self.minimumSize()
 
+    @staticmethod
+    def _item_w(item) -> int:
+        widget = item.widget()
+        min_w = widget.minimumSize().width() if widget is not None else item.minimumSize().width()
+        return max(item.sizeHint().width(), min_w)
+
+    def _item_hint(self, item) -> QSize:
+        widget = item.widget()
+        if widget is not None:
+            return item.sizeHint().expandedTo(widget.minimumSize())
+        return item.sizeHint().expandedTo(item.minimumSize())
+
     def natural_width(self) -> int:
         """所有子控件排成一行时需要的宽度（含间距与边距）"""
         if not self._items:
             m = self.contentsMargins()
             return m.left() + m.right()
-        widths = sum(it.sizeHint().width() for it in self._items)
+        widths = sum(self._item_w(it) for it in self._items)
         gaps = self._hspace * (len(self._items) - 1)
         m = self.contentsMargins()
         return widths + gaps + m.left() + m.right()
@@ -69,7 +81,7 @@ class FlowLayout(QLayout):
     def minimumSize(self) -> QSize:
         size = QSize()
         for item in self._items:
-            size = size.expandedTo(item.minimumSize())
+            size = size.expandedTo(self._item_hint(item))
         m = self.contentsMargins()
         size += QSize(m.left() + m.right(), m.top() + m.bottom())
         return size
@@ -95,7 +107,7 @@ class FlowLayout(QLayout):
                 left += w + self._hspace
 
         for item in self._items:
-            hint = item.sizeHint()
+            hint = self._item_hint(item)
             if x + hint.width() > effective.right() + 1 and line_items:
                 # 当前行放不下，先落位上一行再换行
                 place_line(line_items, y, line_height, line_width)

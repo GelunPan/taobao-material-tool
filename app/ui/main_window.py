@@ -2,8 +2,10 @@
 
 只负责界面组织与事件响应，数据读写走 ShopRepository，图片/导出走服务层。
 """
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QBrush, QColor
+from PyQt6.QtCore import (
+    Qt, QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, pyqtProperty,
+)
+from PyQt6.QtGui import QBrush, QColor, QCursor, QImage
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -17,6 +19,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStackedWidget,
+    QToolTip,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -29,6 +33,54 @@ from ..storage import DataLoadError, ShopRepository
 from .add_dialog import AddRecordDialog
 from .record_table import RecordTable
 
+# 左侧店铺栏宽度与折叠动画参数
+SHOP_PANEL_DEFAULT_WIDTH = 250   # 展开时的默认宽度（也是首次展开的目标宽度）
+SHOP_RAIL_WIDTH = 38             # 收起后保留的窄轨宽度（放置展开按钮）
+PANEL_ANIM_DURATION = 220        # 折叠/展开过渡时长（毫秒），InOutCubic 缓动
+PANEL_COLLAPSE_THRESHOLD = 80   # 拖动分割条使左栏窄于该宽度，松手即自动收起
+
+
+class SplitterWidthAnimator(QObject):
+    """动画属性桥：把 QSplitter 某个子部件的宽度包装成可插值的 Qt 属性。
+
+    QPropertyAnimation 每帧设置 panelWidth，setter 内同步 setSizes，
+    剩余宽度全部分给另一侧，实现分栏宽度的平滑过渡。
+    """
+
+    def __init__(self, splitter: QSplitter, index: int, parent=None):
+        super().__init__(parent)
+        self._splitter = splitter
+        self._index = index
+        self._width = 0
+
+    def _get_width(self) -> int:
+        return self._width
+
+    def _set_width(self, value) -> None:
+        self._width = int(value)
+        sizes = self._splitter.sizes()
+        total = sum(sizes)
+        sizes[self._index] = self._width
+        rest = max(0, total - self._width)
+        for i in range(len(sizes)):
+            if i != self._index:
+                sizes[i] = rest
+        self._splitter.setSizes(sizes)
+
+    panelWidth = pyqtProperty(int, fget=_get_width, fset=_set_width)
+
+
+class CollapsibleStack(QStackedWidget):
+    """分栏折叠容器：最小尺寸提示归零。
+
+    QSplitter 默认按子部件 minimumSizeHint 限制可收窄的下限，
+    QStackedWidget 会取所有页面（含完整店铺面板）的最小提示，导致无法
+    收到窄轨宽度；这里统一返回 0，宽度完全交给 QSplitter/动画控制。
+    """
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -40,6 +92,11 @@ class MainWindow(QMainWindow):
         self.repo = ShopRepository(config.DATA_FILE, config.IMAGES_DIR)
         self.current_shop = None
         self._all_expanded = True  # 店铺树整体展开状态
+        # 左侧栏折叠状态与展开宽度记忆
+        self._shop_collapsed = False
+        self._shop_expanded_width = SHOP_PANEL_DEFAULT_WIDTH
+        self._panel_sized = False  # 首帧显示后再精确设定初始栏宽
+        self._user_dragging = False  # 用户是否正在拖动分割条
 
         self.init_ui()
         self.load_data()
@@ -50,22 +107,50 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(splitter)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(self.splitter)
 
-        splitter.addWidget(self._build_shop_panel())
-        splitter.addWidget(self._build_record_panel())
-        splitter.setSizes([250, 1150])
+        # 左侧用 QStackedWidget 承载“完整面板 / 收起窄轨”两个页面，
+        # 宽度由 QSplitter 动画驱动，页面在动画起止时切换
+        self.shop_stack = CollapsibleStack()
+        self.shop_stack.setMinimumWidth(0)
+        self.shop_stack.addWidget(self._build_shop_panel())      # index 0：完整面板
+        self.shop_stack.addWidget(self._build_collapsed_rail())  # index 1：收起窄轨
+        self.splitter.addWidget(self.shop_stack)
+        self.splitter.addWidget(self._build_record_panel())
+        self.splitter.setSizes([SHOP_PANEL_DEFAULT_WIDTH, 1150])
+
+        # 折叠/展开过渡动画（InOutCubic 起止柔和、中间流畅）
+        self._panel_animator = SplitterWidthAnimator(self.splitter, 0, self)
+        self.panel_animation = QPropertyAnimation(self._panel_animator, b"panelWidth", self)
+        self.panel_animation.setDuration(PANEL_ANIM_DURATION)
+        self.panel_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        # 拖动左栏右边缘：窄于阈值松手自动收起；收起态向外拖出自动展开
+        # QSplitterHandle 没有按压信号，用事件过滤器捕获鼠标按下/松开
+        self._split_handle = self.splitter.handle(1)
+        self._split_handle.installEventFilter(self)
+
+    def showEvent(self, event):
+        # 首帧显示时按分割器实际可用宽度精确设定左栏宽度（避免按比例缩放产生偏差）
+        super().showEvent(event)
+        if not self._panel_sized:
+            self._panel_sized = True
+            available = self.splitter.width() - self.splitter.handleWidth()
+            self.splitter.setSizes(
+                [SHOP_PANEL_DEFAULT_WIDTH, max(0, available - SHOP_PANEL_DEFAULT_WIDTH)]
+            )
 
     def _build_shop_panel(self):
         """左侧：店铺列表面板"""
         left_widget = QWidget()
         left_widget.setObjectName("panel")
+        # 显式放开最小宽度，QSplitter 动画才能把它收到窄轨宽度
+        left_widget.setMinimumWidth(0)
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(8)
 
-        # 标题行：标题 + 展开/折叠切换按钮
+        # 标题行：标题 + 树展开折叠 + 侧栏收起按钮
         title_row = QHBoxLayout()
         left_label = QLabel("店铺列表")
         left_label.setObjectName("title")
@@ -78,6 +163,7 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(title_row)
 
         self.shop_tree = QTreeWidget()
+        self.shop_tree.setMinimumWidth(0)
         self.shop_tree.setHeaderLabels(["店铺名称"])
         # 关闭 Qt 默认双击展开，由 on_shop_double_clicked 统一控制，避免双重切换抵消
         self.shop_tree.setExpandsOnDoubleClick(False)
@@ -103,6 +189,95 @@ class MainWindow(QMainWindow):
 
         return left_widget
 
+    def _build_collapsed_rail(self):
+        """左侧收起后保留的窄轨：仅放一个展开按钮"""
+        rail = QWidget()
+        rail.setObjectName("panel")
+        rail.setMinimumWidth(0)
+        rail_layout = QVBoxLayout(rail)
+        rail_layout.setContentsMargins(4, 10, 4, 10)
+        self.btn_expand_panel = QPushButton("»")
+        self.btn_expand_panel.setObjectName("treeToggle")
+        self.btn_expand_panel.setToolTip("展开店铺栏（也可向右拖动边缘展开）")
+        self.btn_expand_panel.setFixedWidth(28)
+        self.btn_expand_panel.clicked.connect(self.expand_shop_panel)
+        rail_layout.addWidget(
+            self.btn_expand_panel,
+            alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
+        )
+        rail_layout.addStretch()
+        return rail
+
+    # ---------- 左侧栏折叠/展开动画 ----------
+    def _animate_panel_width(self, target_width: int, on_finished=None) -> None:
+        """把左侧栏从当前宽度平滑过渡到 target_width"""
+        anim = self.panel_animation
+        anim.stop()
+        try:
+            anim.finished.disconnect()
+        except (TypeError, RuntimeError):
+            pass  # 没有已连接的槽时忽略
+        if on_finished is not None:
+            anim.finished.connect(on_finished)
+        # 动画期间禁用分割条拖拽，避免手动拖拽与动画互相打架
+        handle = self.splitter.handle(1)
+        handle.setEnabled(False)
+
+        def _reenable(*_):
+            handle.setEnabled(True)
+        anim.finished.connect(_reenable)
+
+        anim.setStartValue(self.splitter.sizes()[0])
+        anim.setEndValue(target_width)
+        anim.start()
+
+    def eventFilter(self, obj, event):
+        """监听分割条手柄的鼠标按下/松开，驱动拖拽收起/展开"""
+        if obj is self._split_handle:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                self._on_split_handle_pressed()
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                self._on_split_handle_released()
+        return super().eventFilter(obj, event)
+
+    def _on_split_handle_pressed(self) -> None:
+        """开始拖动分割条：若当前是收起态，立即换回完整面板跟随拖拽宽度"""
+        self._user_dragging = True
+        if self._shop_collapsed:
+            self.panel_animation.stop()
+            self.shop_stack.setCurrentIndex(0)
+            self._shop_collapsed = False
+
+    def _on_split_handle_released(self) -> None:
+        """松手判定：拖到阈值以下自动吸附收起；否则记住展开宽度"""
+        self._user_dragging = False
+        width = self.splitter.sizes()[0]
+        if width < PANEL_COLLAPSE_THRESHOLD:
+            self.collapse_shop_panel()
+        elif width > SHOP_RAIL_WIDTH + 20:
+            self._shop_expanded_width = width
+
+    def collapse_shop_panel(self) -> None:
+        """收起左侧店铺栏：动画收窄到窄轨，结束后切换为窄轨页面"""
+        if self._shop_collapsed:
+            return
+        current = self.splitter.sizes()[0]
+        if current > SHOP_RAIL_WIDTH + 20:
+            self._shop_expanded_width = current  # 记住用户当前宽度，展开时还原
+
+        def on_finished():
+            self.shop_stack.setCurrentIndex(1)
+            self._shop_collapsed = True
+        self._animate_panel_width(SHOP_RAIL_WIDTH, on_finished)
+
+    def expand_shop_panel(self) -> None:
+        """展开左侧店铺栏：先切回完整面板，再动画还原宽度"""
+        if not self._shop_collapsed:
+            return
+        self.shop_stack.setCurrentIndex(0)
+        self._shop_collapsed = False
+        self._animate_panel_width(self._shop_expanded_width)
+
     def _build_record_panel(self):
         """右侧：素材表格面板"""
         right_widget = QWidget()
@@ -118,12 +293,14 @@ class MainWindow(QMainWindow):
         self.table = RecordTable()
         self.table.image_paste_requested.connect(self.on_paste_image_requested)
         self.table.image_delete_requested.connect(self.on_delete_image_requested)
+        self.table.image_copy_requested.connect(self.on_copy_image)
+        self.table.image_add_requested.connect(self.on_add_images_requested)
         self.table.edit_requested.connect(self.on_edit_record)
         self.table.delete_requested.connect(self.on_delete_record)
         self.table.selection_changed.connect(self.on_selection_changed)
         right_layout.addWidget(self.table)
 
-        tip_label = QLabel("提示：选中图片格后按 Ctrl+V 可粘贴截图或复制的图片文件（覆盖原图）；右键图片可查看/粘贴/删除，双击查看大图")
+        tip_label = QLabel("提示：双击图片复制到剪贴板，右键查看大图/粘贴/删除；点图片格的 + 可从文件添加，也可选中后按 Ctrl+V 粘贴")
         tip_label.setObjectName("tip")
         right_layout.addWidget(tip_label)
 
@@ -146,6 +323,7 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(self.btn_delete)
         self.selection_label = QLabel("已选 0 条")
         self.selection_label.setObjectName("tip")
+        self.selection_label.hide()  # 未进入批量选择模式时不显示，界面更干净
         bottom_layout.addWidget(self.selection_label)
         bottom_layout.addStretch()
         bottom_layout.addWidget(QLabel("搜索:"))
@@ -156,8 +334,9 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(bottom_layout)
 
         self.btn_add.clicked.connect(self.on_add_record)
-        self.btn_edit.clicked.connect(self.on_edit_record)
-        self.btn_delete.clicked.connect(self.on_delete_record)
+        # clicked 信号自带 bool(checked)，用 lambda 隔离，避免 False 被当作行号传入
+        self.btn_edit.clicked.connect(lambda _checked=False: self.on_edit_record())
+        self.btn_delete.clicked.connect(lambda _checked=False: self.on_delete_record())
         self.btn_export.clicked.connect(self.on_export)
         self.btn_search.clicked.connect(self.on_search)
         self.btn_clear_search.clicked.connect(self.on_clear_search)
@@ -311,13 +490,23 @@ class MainWindow(QMainWindow):
         self.refresh_shop_tree()
         self.save_data()
 
+    def _current_table_row(self) -> int:
+        """取当前要操作的行：优先 currentRow；若用户只点了勾选框导致
+        currentRow 停在旧位置，则回退到选择模型中选中的行"""
+        row = self.table.currentRow()
+        if row >= 0:
+            return row
+        rows = self.table.selectionModel().selectedRows()
+        return rows[0].row() if rows else -1
+
     def on_delete_record(self, row=None):
         """删除记录：row 为 None 时取当前选中行（按钮），否则为右键菜单指定的行"""
         if not self.current_shop:
             QMessageBox.information(self, "提示", "请先选择店铺")
             return
-        if row is None:
-            row = self.table.currentRow()
+        # bool 是 int 子类：误传入信号 bool 时统一按“未指定行”处理
+        if not isinstance(row, int) or isinstance(row, bool):
+            row = self._current_table_row()
         if row < 0:
             QMessageBox.information(self, "提示", "请先选中要删除的行")
             return
@@ -338,8 +527,9 @@ class MainWindow(QMainWindow):
         if not self.current_shop:
             QMessageBox.information(self, "提示", "请先选择店铺")
             return
-        if row is None:
-            row = self.table.currentRow()
+        # bool 是 int 子类：误传入信号 bool 时统一按“未指定行”处理
+        if not isinstance(row, int) or isinstance(row, bool):
+            row = self._current_table_row()
         if row < 0:
             QMessageBox.information(self, "提示", "请先选中要修改的行")
             return
@@ -388,8 +578,41 @@ class MainWindow(QMainWindow):
         self.save_data()
 
     def on_selection_changed(self, count):
-        """表格勾选数量变化时更新底部计数"""
+        """表格勾选数量变化时更新底部计数（仅批量选择模式下显示）"""
         self.selection_label.setText(f"已选 {count} 条")
+        self.selection_label.setVisible(not self.table.isColumnHidden(0))
+
+    def on_copy_image(self, path: str) -> None:
+        """双击缩略图：把图片本身复制到剪贴板（可直接粘贴到聊天/千牛等）"""
+        image = QImage(path)
+        if image.isNull():
+            QMessageBox.warning(self, "提示", "图片读取失败，无法复制")
+            return
+        QApplication.clipboard().setImage(image)
+        QToolTip.showText(QCursor.pos(), "图片已复制，可直接粘贴")
+
+    def on_add_images_requested(self, row: int, field_name: str) -> None:
+        """多图单元格“+”块：从文件选择图片，导入素材目录后追加到记录"""
+        if not self.current_shop:
+            return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "添加图片（可按住 Ctrl 多选）", "",
+            "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif)",
+        )
+        if not paths:
+            return
+        saved, new_counter = ImageService.import_image_files(
+            paths, self.repo.images_dir, self.repo.image_counter
+        )
+        if not saved:
+            QMessageBox.warning(self, "提示", "所选文件都不是有效图片")
+            return
+        self.repo.image_counter = new_counter
+        record_index = self.table.rendered_index(row)
+        for filepath in saved:
+            self.repo.append_record_image(self.current_shop, record_index, filepath)
+        self.refresh_table()
+        self.save_data()
 
     # ==================== 搜索 ====================
     def on_search(self):

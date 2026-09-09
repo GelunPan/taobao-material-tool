@@ -47,6 +47,28 @@ class ImageService:
         return None, counter
 
     @staticmethod
+    def import_image_files(src_paths, images_dir: Path, counter: int):
+        """把用户从文件对话框选中的外部图片统一读入并保存到 images_dir。
+
+        不直接引用原文件路径（原文件可能被移动/删除），而是用 QImage 解码后
+        按统一编号保存为 IMAGE_EXT，和剪贴板保存的图片口径一致。
+        返回 (已保存路径列表, 新计数器)；无法读取的文件自动跳过。
+        """
+        saved = []
+        images_dir.mkdir(parents=True, exist_ok=True)
+        for src in src_paths:
+            image = QImage(str(src))
+            if image.isNull():
+                continue
+            counter += 1
+            filepath = images_dir / f"image_{counter:04d}.{IMAGE_EXT.lower()}"
+            if image.save(str(filepath), IMAGE_EXT):
+                saved.append(str(filepath))
+            else:
+                counter -= 1
+        return saved, counter
+
+    @staticmethod
     def _image_from_mime(clipboard, mime):
         """从剪贴板提取图片 QImage：优先 clipboard.image()，失败再从原始字节兜底解码。
 

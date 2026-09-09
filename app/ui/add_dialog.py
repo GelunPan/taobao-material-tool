@@ -2,6 +2,7 @@
 
 record 为 None 时是新增模式；传入已有记录时预填字段，作为修改模式。
 图片区域一律显示缩略图，不显示本地文件名。
+布局：文本字段与图片分组上下排列，两列标签固定同宽，整体对齐规整。
 """
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -27,6 +28,16 @@ IMAGE_FILTER = "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif)"
 _DASHED = "color:#A8ABB2; border:1px dashed #C0C4CC; border-radius:6px; background:#FAFBFC;"
 _SOLID = "border:1px solid #DCDFE6; border-radius:6px;"
 
+# 两列布局中标签列的固定宽度（文本区与图片区标签严格对齐）
+_LABEL_WIDTH = 76
+
+
+def _form_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setFixedWidth(_LABEL_WIDTH)
+    label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    return label
+
 
 class SingleImagePicker(QWidget):
     """单张图片选择器：缩略图 + 选择/移除按钮，不显示文件名"""
@@ -47,8 +58,11 @@ class SingleImagePicker(QWidget):
         lay.addWidget(self.thumb)
 
         col = QVBoxLayout()
+        col.setSpacing(6)
         btn_select = QPushButton("选择图片")
+        btn_select.setFixedWidth(84)
         btn_clear = QPushButton("移除")
+        btn_clear.setFixedWidth(84)
         btn_select.clicked.connect(self.choose)
         btn_clear.clicked.connect(self.clear)
         col.addWidget(btn_select)
@@ -94,6 +108,7 @@ class MultiImagePicker(QWidget):
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
         self.grid_host = QWidget()
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, 0)
@@ -101,7 +116,9 @@ class MultiImagePicker(QWidget):
         outer.addWidget(self.grid_host, 1)
 
         col = QVBoxLayout()
+        col.setSpacing(6)
         self.btn_add = QPushButton("+ 添加图片")
+        self.btn_add.setFixedWidth(84)
         self.btn_add.clicked.connect(self.choose_more)
         col.addWidget(self.btn_add)
         col.addStretch()
@@ -132,7 +149,7 @@ class MultiImagePicker(QWidget):
             if w is not None:
                 w.deleteLater()
         if not self._paths:
-            empty = QLabel("尚未添加图片，点击右侧「添加图片」")
+            empty = QLabel("点击右侧「+ 添加图片」选择")
             empty.setStyleSheet("color:#A8ABB2;")
             self.grid.addWidget(empty, 0, 0)
             return
@@ -182,39 +199,61 @@ class AddRecordDialog(QDialog):
     def __init__(self, parent=None, record: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("修改素材记录" if record else "新增素材记录")
-        self.setMinimumWidth(640)
+        self.setMinimumWidth(680)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(12)
 
         # ---------- 文本字段 ----------
         form_layout = QFormLayout()
+        form_layout.setHorizontalSpacing(12)
+        form_layout.setVerticalSpacing(10)
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
         self.product_id_input = QLineEdit()
         self.spec_input = QLineEdit()
         self.title_input = QLineEdit()
         self.helper_input = QLineEdit()
         self.review_input = QTextEdit()
-        self.review_input.setMaximumHeight(100)
+        self.review_input.setMaximumHeight(96)
 
-        form_layout.addRow("商品ID:", self.product_id_input)
-        form_layout.addRow("规格:", self.spec_input)
-        form_layout.addRow("标题:", self.title_input)
-        form_layout.addRow("补手:", self.helper_input)
-        form_layout.addRow("买家秀评价:", self.review_input)
+        form_layout.addRow(_form_label("商品ID:"), self.product_id_input)
+        form_layout.addRow(_form_label("规格:"), self.spec_input)
+        form_layout.addRow(_form_label("标题:"), self.title_input)
+        form_layout.addRow(_form_label("补手:"), self.helper_input)
+        form_layout.addRow(_form_label("买家秀评价:"), self.review_input)
         layout.addLayout(form_layout)
 
-        # ---------- 图片选择（缩略图形式） ----------
-        img_layout = QFormLayout()
+        # ---------- 图片选择（浅色分组容器，标签列与上方文本区同宽对齐） ----------
+        img_group = QWidget()
+        img_group.setObjectName("imgGroup")
+        img_layout = QFormLayout(img_group)
+        img_layout.setContentsMargins(10, 8, 10, 10)
+        img_layout.setHorizontalSpacing(12)
+        img_layout.setVerticalSpacing(10)
+        img_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        group_title = QLabel("商品图片")
+        group_title.setObjectName("imgGroupTitle")
+        img_layout.addRow(group_title)
+
         self.spec_picker = SingleImagePicker()
         self.link_picker = SingleImagePicker()
         self.review_picker = MultiImagePicker()
-        img_layout.addRow("规格图:", self.spec_picker)
-        img_layout.addRow("链接主图:", self.link_picker)
-        img_layout.addRow("评价图片（可多张）:", self.review_picker)
-        layout.addLayout(img_layout)
+        img_layout.addRow(_form_label("规格图:"), self.spec_picker)
+        img_layout.addRow(_form_label("链接主图:"), self.link_picker)
+        img_layout.addRow(_form_label("评价图片:"), self.review_picker)
+        layout.addWidget(img_group)
 
-        # ---------- 按钮 ----------
+        layout.addStretch()
+
+        # ---------- 底部按钮（右对齐，保存为主按钮） ----------
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("保存")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setProperty("primary", True)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

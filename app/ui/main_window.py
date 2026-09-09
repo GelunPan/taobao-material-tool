@@ -117,11 +117,13 @@ class MainWindow(QMainWindow):
 
         self.table = RecordTable()
         self.table.image_paste_requested.connect(self.on_paste_image_requested)
+        self.table.image_delete_requested.connect(self.on_delete_image_requested)
         self.table.edit_requested.connect(self.on_edit_record)
         self.table.delete_requested.connect(self.on_delete_record)
+        self.table.selection_changed.connect(self.on_selection_changed)
         right_layout.addWidget(self.table)
 
-        tip_label = QLabel("提示：双击图片占位单元格可直接粘贴截图/图片")
+        tip_label = QLabel("提示：选中图片格后按 Ctrl+V 可直接粘贴截图；右键图片可查看/粘贴/删除，双击查看大图")
         tip_label.setObjectName("tip")
         right_layout.addWidget(tip_label)
 
@@ -142,6 +144,9 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(self.btn_add)
         bottom_layout.addWidget(self.btn_edit)
         bottom_layout.addWidget(self.btn_delete)
+        self.selection_label = QLabel("已选 0 条")
+        self.selection_label.setObjectName("tip")
+        bottom_layout.addWidget(self.selection_label)
         bottom_layout.addStretch()
         bottom_layout.addWidget(QLabel("搜索:"))
         bottom_layout.addWidget(self.search_input)
@@ -289,6 +294,7 @@ class MainWindow(QMainWindow):
         """按当前店铺重新渲染表格"""
         records = self.repo.get_records(self.current_shop) if self.current_shop else []
         self.table.render(records)
+        self.selection_label.setText("已选 0 条")
 
     def on_add_record(self):
         if not self.current_shop:
@@ -368,7 +374,22 @@ class MainWindow(QMainWindow):
             self.repo.set_record_field(self.current_shop, record_index, field_name, filepath)
         self.refresh_table()
         self.save_data()
-        QMessageBox.information(self, "成功", "图片已粘贴！")
+
+    def on_delete_image_requested(self, row, field_name, img_index):
+        """删除单元格内的某张图片：多图移除指定序号，单图直接清空（仅移除引用）"""
+        if not self.current_shop:
+            return
+        record_index = self.table.rendered_index(row)
+        if field_name in config.MULTI_IMAGE_FIELDS:
+            self.repo.remove_record_image(self.current_shop, record_index, img_index)
+        else:
+            self.repo.set_record_field(self.current_shop, record_index, field_name, "")
+        self.refresh_table()
+        self.save_data()
+
+    def on_selection_changed(self, count):
+        """表格勾选数量变化时更新底部计数"""
+        self.selection_label.setText(f"已选 {count} 条")
 
     # ==================== 搜索 ====================
     def on_search(self):

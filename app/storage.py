@@ -88,3 +88,10 @@ class ShopRepository:
         record = self.shops[shop_name][index]
         record.setdefault("image_paths", [])
         record["image_paths"].append(filepath)
+
+    def remove_record_image(self, shop_name: str, index: int, img_index: int) -> None:
+        """移除某条记录评价图片列表中指定序号的一张（仅移除引用，不删除磁盘文件）"""
+        record = self.shops[shop_name][index]
+        images = record.setdefault("image_paths", [])
+        if 0 <= img_index < len(images):
+            images.pop(img_index)

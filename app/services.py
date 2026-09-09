@@ -19,16 +19,18 @@ class ImageService:
         返回 (文件路径, 新计数器)；剪贴板无图片或图片无效时返回 (None, counter)。
         """
         mime = clipboard.mimeData()
-        if not mime.hasImage():
+        if mime is None or not mime.hasImage():
             return None, counter
         image = QImage(clipboard.image())
         if image.isNull():
             return None, counter
 
         counter += 1
+        images_dir.mkdir(parents=True, exist_ok=True)
         filename = f"image_{counter:04d}.{IMAGE_EXT.lower()}"
         filepath = images_dir / filename
-        image.save(str(filepath), IMAGE_EXT)
+        if not image.save(str(filepath), IMAGE_EXT):
+            return None, counter - 1
         return str(filepath), counter
 
 

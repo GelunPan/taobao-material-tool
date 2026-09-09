@@ -119,6 +119,29 @@ QTableCornerButton::section {
     border: none;
 }
 
+/* ===== 复选框（行勾选 + 表头全选，三态图标，素材在 app/assets） ===== */
+QCheckBox {
+    background: transparent;
+    spacing: 0;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+}
+
+QCheckBox::indicator:unchecked {
+    image: url("@ASSETS@/cb_unchecked.png");
+}
+
+QCheckBox::indicator:checked {
+    image: url("@ASSETS@/cb_checked.png");
+}
+
+QCheckBox::indicator:indeterminate {
+    image: url("@ASSETS@/cb_partial.png");
+}
+
 /* ===== 树 ===== */
 QTreeWidget {
     background-color: #FFFFFF;

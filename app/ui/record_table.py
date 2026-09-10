@@ -321,6 +321,12 @@ class RecordTable(QTableWidget):
         vheader.setMaximumWidth(ROW_HEADER_WIDTH)
         vheader.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         vheader.setToolTip("点击行号选中整行")
+        # 平滑滚动：按像素而非按行滚动，避免"一段一段"的顿挫感
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        # 滚轮速度调慢：每次滚动 15px（默认约 20px+），配合 ScrollPerPixel 实现无极微调
+        self.verticalScrollBar().setSingleStep(15)
+        self.horizontalScrollBar().setSingleStep(15)
         header = self.horizontalHeader()
         header.setMinimumSectionSize(SELECT_COLUMN_WIDTH)  # 列宽下限（勾选列即此宽度），再窄出横向滚动条
         # 勾选列固定窄宽，不参与拉伸、不允许拖宽

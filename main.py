@@ -2,7 +2,11 @@
 import sys
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
+
+# QWebEngineWidgets（淘宝登录内置浏览器）要求在 QApplication 创建前设置此属性
+QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 
 from app.config import ASSETS_DIR
 from app.ui.main_window import MainWindow

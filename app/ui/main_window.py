@@ -35,9 +35,14 @@ from PyQt6.QtWidgets import (
 
 from .. import config
 from ..services import ExcelExporter, ImageService
+from ..services.taobao_client import TaobaoClient
 from ..storage import DataLoadError, ShopRepository
+from ..utils.logger import get_logger
 from .add_dialog import AddRecordDialog
 from .record_table import RecordTable
+from .taobao_login_dialog import TaobaoLoginDialog
+
+logger = get_logger("taobao.ui")
 
 # 左侧店铺栏宽度与折叠动画参数
 SHOP_PANEL_DEFAULT_WIDTH = 250   # 展开时的默认宽度（也是首次展开的目标宽度）
@@ -249,6 +254,7 @@ class MainWindow(QMainWindow):
 
         # 数据层
         self.repo = ShopRepository(config.DATA_FILE, config.IMAGES_DIR)
+        self.taobao = TaobaoClient(config.TAOBAO_COOKIE_FILE)
         self.current_shop = None
         self._all_expanded = True  # 店铺树整体展开状态
         # 左侧栏折叠状态与展开宽度记忆
@@ -507,6 +513,9 @@ class MainWindow(QMainWindow):
         self.btn_search = QPushButton("搜索")
         self.btn_clear_search = QPushButton("清除搜索")
 
+        self.btn_taobao_login = QPushButton("淘宝登录")
+        self.btn_taobao_login.setToolTip("登录淘宝获取 cookie，用于后续导入商品素材")
+        bottom_layout.addWidget(self.btn_taobao_login)
         bottom_layout.addWidget(self.btn_add)
         bottom_layout.addWidget(self.btn_edit)
         bottom_layout.addWidget(self.btn_copy)
@@ -523,6 +532,7 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(self.btn_export)
         right_layout.addLayout(bottom_layout)
 
+        self.btn_taobao_login.clicked.connect(self.on_taobao_login)
         self.btn_add.clicked.connect(self.on_add_record)
         # clicked 信号自带 bool(checked)，用 lambda 隔离，避免 False 被当作行号传入
         self.btn_edit.clicked.connect(lambda _checked=False: self.on_edit_record())
@@ -1005,6 +1015,59 @@ class MainWindow(QMainWindow):
         self.search_input.clear()
         if self.current_shop:
             self.refresh_table()
+
+    # ==================== 淘宝登录 ====================
+    def on_taobao_login(self):
+        """淘宝登录按钮：已登录则显示状态并提供重新登录/退出登录，未登录则弹登录框"""
+        logger.info("点击淘宝登录按钮，当前登录状态: %s", "已登录" if self.taobao.is_logged_in() else "未登录")
+        if self.taobao.is_logged_in():
+            # 已登录：提供重新登录和退出登录选项
+            msg = QMessageBox(self)
+            msg.setWindowTitle("淘宝登录")
+            msg.setText(f"当前已登录淘宝\n{self.taobao.cookie_summary()}")
+            btn_relogin = msg.addButton("重新登录", QMessageBox.ButtonRole.AcceptRole)
+            btn_logout = msg.addButton("退出登录", QMessageBox.ButtonRole.DestructiveRole)
+            msg.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == btn_relogin:
+                # 重新登录：清除本地 cookie 后弹登录框
+                logger.info("用户选择重新登录，清除旧 cookie")
+                self.taobao.clear_cookies()
+                self._show_taobao_login_dialog()
+            elif clicked == btn_logout:
+                # 退出登录：清除本地 cookie，按钮恢复
+                logger.info("用户选择退出登录，清除 cookie")
+                self.taobao.clear_cookies()
+                self.btn_taobao_login.setText("淘宝登录")
+                self.btn_taobao_login.setToolTip("登录淘宝获取 cookie，用于后续导入商品素材")
+            else:
+                logger.info("用户取消登录操作")
+            return
+        self._show_taobao_login_dialog()
+
+    def _show_taobao_login_dialog(self):
+        """弹出淘宝登录对话框"""
+        logger.info("弹出淘宝登录对话框")
+        dialog = TaobaoLoginDialog(self)
+        dialog.cookies_received.connect(self._on_taobao_cookies_received)
+        dialog.exec()
+        logger.info("淘宝登录对话框已关闭")
+
+    def _on_taobao_cookies_received(self, cookies: list):
+        """登录成功：保存 cookie 并更新按钮状态（不立即用 requests 验证，避免触发风控）"""
+        logger.info("收到登录成功回调，共 %d 条 cookie，开始保存", len(cookies))
+        self.taobao.save_cookies(cookies)
+        count = len(cookies)
+        self.btn_taobao_login.setText("淘宝已登录 ✓")
+        self.btn_taobao_login.setToolTip(f"已登录淘宝（{count} 条 cookie）")
+        logger.info("淘宝登录完成，按钮状态已更新（%d 条 cookie）", count)
+        QMessageBox.information(
+            self,
+            "登录成功",
+            f"淘宝登录成功，已获取 {count} 条 cookie。\n\n"
+            f"提示：抓取商品时用内置浏览器渲染页面，避免直接请求触发风控。",
+        )
 
     # ==================== 导出 ====================
     def on_export(self):

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PyQt6.QtGui import QImage
 
-from .config import EXPORT_COLUMN_WIDTHS, RECORD_FIELDS, TABLE_HEADERS, IMAGE_EXT
+from ..config import EXPORT_COLUMN_WIDTHS, RECORD_FIELDS, TABLE_HEADERS, IMAGE_EXT
 
 # 复制图片文件粘贴时识别的扩展名
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".ico"}

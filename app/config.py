@@ -81,3 +81,6 @@ IMAGE_EXT = "PNG"             # 粘贴/导入图片保存格式
 
 # ---------- Excel 导出 ----------
 EXPORT_COLUMN_WIDTHS = [15, 30, 20, 40, 30, 15, 50, 30, 50]
+
+# ---------- 淘宝导入 ----------
+TAOBAO_COOKIE_FILE = DATA_DIR / "taobao_cookie.json"   # 淘宝登录 cookie 持久化文件

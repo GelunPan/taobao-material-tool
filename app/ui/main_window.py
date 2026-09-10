@@ -312,11 +312,7 @@ class MainWindow(QMainWindow):
         self.table.selection_changed.connect(self.on_selection_changed)
         right_layout.addWidget(self.table)
 
-<<<<<<< HEAD
         tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；任意图片格（含多图格空白处）右键或按 Ctrl+V 粘贴图片；双击图片复制")
-=======
-        tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；任意格右键或点“修改记录”可编辑该条；双击图片复制，Ctrl+V 粘贴")
->>>>>>> ebd8bb234357cc82d831d9a4395b31c38bdfb7c7
         tip_label.setObjectName("tip")
         right_layout.addWidget(tip_label)
 
@@ -602,7 +598,6 @@ class MainWindow(QMainWindow):
         # bool 是 int 子类：误传入信号 bool 时统一按“未指定行”处理
         if not isinstance(row, int) or isinstance(row, bool):
             row = self._current_table_row()
-<<<<<<< HEAD
         # 批量选择模式下勾选了至少一条：直接逐条复制，不再弹表单
         checked = self.table.selected_rendered_indices()
         if not self.table.isColumnHidden(0) and checked:
@@ -618,8 +613,6 @@ class MainWindow(QMainWindow):
                 QCursor.pos(), f"已复制 {len(checked)} 条记录", self, msecShowTime=1500,
             )
             return
-=======
->>>>>>> ebd8bb234357cc82d831d9a4395b31c38bdfb7c7
         if row < 0:
             QMessageBox.information(self, "提示", "请先选中要复制的记录")
             return
@@ -640,7 +633,6 @@ class MainWindow(QMainWindow):
         self.save_data()
         self.table.setCurrentCell(new_pos, 1)
 
-<<<<<<< HEAD
     def on_cell_edited(self, row, field, text):
         """文本格双击就地编辑完成：直接写回该字段并保存，行高随之重排（不重渲表格）"""
         if not self.current_shop:
@@ -650,8 +642,6 @@ class MainWindow(QMainWindow):
         self.save_data()
         self.table._adjust_row_heights()
 
-=======
->>>>>>> ebd8bb234357cc82d831d9a4395b31c38bdfb7c7
     def on_paste_image_requested(self, row, col, field_name):
         """处理表格中的粘贴图片请求：保存图片并覆盖更新记录"""
         filepath, new_counter = ImageService.save_clipboard_image(

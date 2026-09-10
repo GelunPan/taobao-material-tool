@@ -5,7 +5,7 @@
 from copy import deepcopy
 
 from PyQt6.QtCore import (
-    Qt, QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, pyqtProperty,
+    Qt, QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, QTimer, pyqtProperty,
 )
 from PyQt6.QtGui import QBrush, QColor, QCursor, QIcon, QImage
 from PyQt6.QtWidgets import (
@@ -488,9 +488,13 @@ class MainWindow(QMainWindow):
         """按当前店铺重新渲染表格"""
         records = self.repo.get_records(self.current_shop) if self.current_shop else []
         self.table.render(records)
-        # 左侧栏收起时右侧表格保持完整列宽（不被压到字段看不见）
+        # 左侧栏收起时右侧表格保持完整列宽（不被压到字段看不见）。
+        # _auto_fit_columns 是 singleShot 异步算列宽的，这里延迟到列宽算完再设最小宽，
+        # 否则此刻 _col_mins 还是空的，右侧没有最小宽支撑、折叠时列被压成一团
         if hasattr(self, 'record_panel'):
-            self.record_panel.setMinimumWidth(self.table.total_min_width())
+            def _apply_min_width():
+                self.record_panel.setMinimumWidth(self.table.total_min_width())
+            QTimer.singleShot(80, _apply_min_width)
         self.selection_label.setText("已选 0 条")
 
     def on_add_record(self):

@@ -11,8 +11,9 @@
 
 交互：
 - 双击缩略图：复制该图片到剪贴板；查看大图保留在右键菜单
-- 图片格右键：查看大图 / 粘贴 / 删除；“+”块左键添加文件、双击或 Ctrl+V 粘贴
-- 勾选列默认隐藏，由主窗口“批量选择”按钮切换显示（set_selection_mode）
+- 图片格右键：查看大图 / 粘贴 / 删除 / 修改或复制该条记录；“+”块左键添加文件、双击或 Ctrl+V 粘贴
+- 表头只有一个复选框（模式开关与全选合一）：未开启时位于商品ID表头，勾选即显示行勾选列并全选；
+  批量模式下全选态再点一次退出、勾选列隐藏，半选态点击则补齐全选
 
 列宽与列顺序：数据列均可拖拽宽度、拖动表头换位，勾选逻辑列锁定最左。
 
@@ -243,8 +244,9 @@ class RecordTable(QTableWidget):
     image_copy_requested = pyqtSignal(str)
     # 多图单元格“+”块：请求从文件选择并追加图片（渲染行、字段名）
     image_add_requested = pyqtSignal(int, str)
-    # 右键菜单：请求修改 / 删除某行（行号）
+    # 右键菜单：请求修改 / 复制 / 删除某行（行号）
     edit_requested = pyqtSignal(int)
+    record_copy_requested = pyqtSignal(int)
     delete_requested = pyqtSignal(int)
     # 勾选数量变化（当前勾选行数）
     selection_changed = pyqtSignal(int)
@@ -279,13 +281,21 @@ class RecordTable(QTableWidget):
         self.setHorizontalHeaderLabels(header_labels)
         self.setAlternatingRowColors(True)
         self.setWordWrap(True)  # 长文本（标题/评价）按列宽自动换行，配合行高自适应
-        # 单选行：点哪行选哪行，按住拖动可切换到其他行，不保留多选
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.setEditTriggers(
-            QAbstractItemView.EditTrigger.DoubleClicked
-            | QAbstractItemView.EditTrigger.SelectedClicked
-        )
+        # 选择规则：
+        # - 点内容单元格：只选中该格（SelectItems）
+        # - 点顶部字段表头：选中该列全部数据（QTableView 水平表头默认行为）
+        # - 点最左侧行号（1/2/3…）：选中整行（垂直表头默认行为）
+        # ExtendedSelection 下普通点击仍是单选，同时承载整行/整列选择，
+        # 并保留 Ctrl/Shift 扩展选择（SingleSelection 无法选整行/整列）
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        # 不在表格里就地编辑：所有内容修改统一走“修改记录”弹窗，避免改了却没保存
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # 最左侧行号（垂直表头）：固定窄宽、数字居中，点击行号即选中整行
+        vheader = self.verticalHeader()
+        vheader.setFixedWidth(34)
+        vheader.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        vheader.setToolTip("点击行号选中整行")
         header = self.horizontalHeader()
         header.setMinimumSectionSize(SELECT_COLUMN_WIDTH)  # 列宽下限（勾选列即此宽度），再窄出横向滚动条
         # 勾选列固定窄宽，不参与拉伸、不允许拖宽
@@ -299,18 +309,18 @@ class RecordTable(QTableWidget):
         header.sectionMoved.connect(self._on_section_moved)
         # 拖拽列宽 / 窗口拉伸导致列宽变化后，重新自适应行高并校正表头勾选框位置
         header.sectionResized.connect(self._on_section_resized)
-        self.horizontalScrollBar().valueChanged.connect(self._position_header_checks)
+        self.horizontalScrollBar().valueChanged.connect(self._position_header_check)
 
-        # 表头浮动的全选复选框（三态）；勾选列默认隐藏，进入批量选择模式才显示
+        # 表头唯一复选框（模式开关 + 全选合一，避免两个框点错）：
+        # 勾选列隐藏时位于商品ID表头，勾选即进入批量选择并全选；
+        # 批量模式下位于勾选列表头，全选态再点一次即退出模式
+        # 三态框鼠标点击会自动流转状态，故在 pressed 时缓存“点击前”状态供 clicked 判断
+        self._header_prev_state = Qt.CheckState.Unchecked
         self.header_check = QCheckBox(header)
-        self.header_check.setToolTip("全选 / 取消全选")
-        self.header_check.clicked.connect(self._toggle_all)
-        # 商品ID列表头常驻的“批量选择”开关：勾选即显示勾选列并全选，取消即隐藏
-        self.mode_check = QCheckBox(header)
-        self.mode_check.setToolTip("勾选进入批量选择，再次勾选取消")
-        self.mode_check.clicked.connect(self._on_mode_check_clicked)
+        self.header_check.setToolTip("勾选进入批量选择")
+        self.header_check.pressed.connect(self._remember_header_state)
+        self.header_check.clicked.connect(self._on_header_check_clicked)
         self.setColumnHidden(0, True)
-        self.header_check.hide()
 
         # 右键菜单（非图片区域：整行 修改/删除）
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -318,39 +328,61 @@ class RecordTable(QTableWidget):
 
     # ---------- 批量选择模式（勾选列显隐） ----------
     def set_selection_mode(self, on: bool) -> None:
-        """切换勾选列与表头全选框的显隐；退出模式时清空全部勾选"""
-        self.setColumnHidden(0, not on)
-        self.header_check.setVisible(on)
-        self.mode_check.blockSignals(True)
-        self.mode_check.setChecked(on)
-        self.mode_check.blockSignals(False)
-        if not on:
-            for row_check in self._row_checks.values():
-                row_check.blockSignals(True)
-                row_check.setChecked(False)
-                row_check.blockSignals(False)
-            self._sync_header_check()
-            self.selection_changed.emit(0)
-        self._distribute_stretch_columns()
-        self._adjust_row_heights()
-        self._position_header_checks()
+        """对外的模式切换入口：开启批量选择 / 退出批量选择"""
+        hidden = self.isColumnHidden(0)
+        if on and hidden:
+            self._enter_selection_mode()
+        elif not on and not hidden:
+            self._exit_selection_mode()
 
-    def _on_mode_check_clicked(self) -> None:
-        """商品ID表头开关：勾选进入批量选择并全选，取消则隐藏勾选列"""
-        if self.mode_check.isChecked():
-            self.setColumnHidden(0, False)
-            self.header_check.show()
-            for row_check in self._row_checks.values():
-                row_check.blockSignals(True)
-                row_check.setCheckState(Qt.CheckState.Checked)
-                row_check.blockSignals(False)
+    def _enter_selection_mode(self) -> None:
+        """显示行勾选列并默认全部勾选"""
+        self.setColumnHidden(0, False)
+        self._set_all_rows(True)
+        self._after_mode_toggle()
+
+    def _exit_selection_mode(self) -> None:
+        """清空行勾选并隐藏勾选列，表头复选框移回商品ID列、恢复未勾选"""
+        self._set_all_rows(False, sync=False)
+        self.setColumnHidden(0, True)
+        check = self.header_check
+        check.blockSignals(True)
+        check.setTristate(False)
+        check.setCheckState(Qt.CheckState.Unchecked)
+        check.blockSignals(False)
+        check.setToolTip("勾选进入批量选择")
+        self.selection_changed.emit(0)
+        self._after_mode_toggle()
+
+    def _set_all_rows(self, checked: bool, sync: bool = True) -> None:
+        """统一设置全部行勾选；sync 为真时同步表头三态与已选计数"""
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for row_check in self._row_checks.values():
+            row_check.blockSignals(True)
+            row_check.setCheckState(state)
+            row_check.blockSignals(False)
+        if sync:
             self._sync_header_check()
             self.selection_changed.emit(self.selected_count())
-            self._distribute_stretch_columns()
-            self._adjust_row_heights()
-            self._position_header_checks()
+
+    def _after_mode_toggle(self) -> None:
+        self._distribute_stretch_columns()
+        self._adjust_row_heights()
+        self._position_header_check()
+
+    def _remember_header_state(self) -> None:
+        """鼠标按下时记录点击前的勾选状态（clicked 时状态已被 Qt 自动流转）"""
+        self._header_prev_state = self.header_check.checkState()
+
+    def _on_header_check_clicked(self) -> None:
+        """表头唯一复选框：模式关→开启并全选；模式开且点击前为全选→退出；其余→全选"""
+        if self.isColumnHidden(0):
+            self._enter_selection_mode()
+            return
+        if self._header_prev_state == Qt.CheckState.Checked:
+            self._exit_selection_mode()
         else:
-            self.set_selection_mode(False)
+            self._set_all_rows(True)
 
     # ---------- 列顺序 / 列宽 ----------
     def _on_section_moved(self, logical_index: int, old_visual: int, new_visual: int) -> None:
@@ -362,7 +394,7 @@ class RecordTable(QTableWidget):
             header.blockSignals(False)
 
     def _on_section_resized(self, logical_index: int, _old: int, _new: int) -> None:
-        self._position_header_checks()
+        self._position_header_check()
         if not self._layout_guard:
             # 用户手动拖宽：记住该列，并用弹性列重新找平剩余空间
             self._user_resized.add(logical_index)
@@ -465,7 +497,7 @@ class RecordTable(QTableWidget):
                     self._render_image_cell(row, col, [value] if value else [], field, multi=False)
                 else:
                     text = "" if value is None else str(value)
-                    item = QTableWidgetItem(text)
+                    item = self._make_readonly_item(text)
                     if text:
                         # 完整内容已靠换行展示，tooltip 仅作悬停速览
                         item.setToolTip(text)
@@ -473,11 +505,11 @@ class RecordTable(QTableWidget):
         self.setUpdatesEnabled(True)
 
         self._reset_header_check()
-        self._position_header_checks()
+        self._position_header_check()
         # 列宽在本轮事件处理后才稳定：先自适应列宽，再按最终列宽重算行高
         QTimer.singleShot(0, self._auto_fit_columns)
         QTimer.singleShot(0, self._adjust_row_heights)
-        QTimer.singleShot(0, self._position_header_checks)
+        QTimer.singleShot(0, self._position_header_check)
         # 首屏图片立即开始分片加载
         self._schedule_load_visible()
 
@@ -501,22 +533,18 @@ class RecordTable(QTableWidget):
         # 导致底部修改/删除按钮总是作用在第一条记录”的问题
         check.clicked.connect(lambda _checked=False, r=row: self.setCurrentCell(r, 0))
 
-    def _position_header_checks(self, *_args) -> None:
-        """定位两个浮动表头复选框：第0列全选框（勾选列隐藏时隐藏）、
-        商品ID列（逻辑列1）的批量选择模式开关（常驻，列拖动换位时跟随）"""
+    def _position_header_check(self, *_args) -> None:
+        """定位表头唯一复选框：勾选列显示时在第 0 列中央；隐藏时落在商品ID（逻辑列1）
+        表头，列拖动换位 / 横向滚动时始终跟随到正确位置"""
         header = self.horizontalHeader()
         y = max(0, (header.height() - _HEADER_CHECK_SIZE) // 2)
         if self.isColumnHidden(0):
-            self.header_check.hide()
+            x = header.sectionViewportPosition(1) + 8
         else:
             x = header.sectionViewportPosition(0) + (self.columnWidth(0) - _HEADER_CHECK_SIZE) // 2
-            self.header_check.setGeometry(x, y, _HEADER_CHECK_SIZE, _HEADER_CHECK_SIZE)
-            self.header_check.show()
-            self.header_check.raise_()
-        x1 = header.sectionViewportPosition(1) + 8
-        self.mode_check.setGeometry(x1, y, _HEADER_CHECK_SIZE, _HEADER_CHECK_SIZE)
-        self.mode_check.show()
-        self.mode_check.raise_()
+        self.header_check.setGeometry(x, y, _HEADER_CHECK_SIZE, _HEADER_CHECK_SIZE)
+        self.header_check.show()
+        self.header_check.raise_()
 
     def _reset_header_check(self) -> None:
         """render 后勾选状态全部清零"""
@@ -546,17 +574,11 @@ class RecordTable(QTableWidget):
             check.setTristate(True)
             check.setCheckState(Qt.CheckState.PartiallyChecked)
         check.blockSignals(False)
-
-    def _toggle_all(self) -> None:
-        """用户点击表头复选框：当前非全选（含半选）则全选，已全选则全部取消"""
-        select_all = self.header_check.checkState() == Qt.CheckState.Checked
-        state = Qt.CheckState.Checked if select_all else Qt.CheckState.Unchecked
-        for row_check in self._row_checks.values():
-            row_check.blockSignals(True)
-            row_check.setCheckState(state)
-            row_check.blockSignals(False)
-        self._sync_header_check()
-        self.selection_changed.emit(self.selected_count())
+        if not self.isColumnHidden(0):
+            if checked == total and total > 0:
+                check.setToolTip("已全选，再点一次退出批量选择")
+            else:
+                check.setToolTip("点击全选所有商品")
 
     def selected_count(self) -> int:
         """当前勾选的行数"""
@@ -674,6 +696,9 @@ class RecordTable(QTableWidget):
         act_paste = menu.addAction("粘贴图片（Ctrl+V）")
         menu.addSeparator()
         act_delete = menu.addAction("删除此图片" if multi else "移除图片")
+        menu.addSeparator()
+        act_edit = menu.addAction("修改记录")
+        act_copy = menu.addAction("复制记录")
         chosen = menu.exec(anchor.mapToGlobal(pos))
         if chosen == act_view:
             self.show_image_gallery(view_paths, view_index)
@@ -681,6 +706,10 @@ class RecordTable(QTableWidget):
             self.image_paste_requested.emit(row, col, field_name)
         elif chosen == act_delete:
             self.image_delete_requested.emit(row, field_name, stored_index)
+        elif chosen == act_edit:
+            self.edit_requested.emit(row)
+        elif chosen == act_copy:
+            self.record_copy_requested.emit(row)
 
     @staticmethod
     def _make_readonly_item(text: str = "") -> QTableWidgetItem:
@@ -806,21 +835,39 @@ class RecordTable(QTableWidget):
         self.setCurrentCell(row, col)
         menu = QMenu(self)
         act_paste = menu.addAction("粘贴图片（Ctrl+V）")
-        if menu.exec(anchor.mapToGlobal(pos)) == act_paste:
+        menu.addSeparator()
+        act_edit = menu.addAction("修改记录")
+        act_copy = menu.addAction("复制记录")
+        chosen = menu.exec(anchor.mapToGlobal(pos))
+        if chosen == act_paste:
             self.image_paste_requested.emit(row, col, field_name)
+        elif chosen == act_edit:
+            self.edit_requested.emit(row)
+        elif chosen == act_copy:
+            self.record_copy_requested.emit(row)
 
     # ---------- 右键菜单（整行：修改/删除） ----------
     def _show_context_menu(self, pos) -> None:
         row = self.rowAt(pos.y())
         if row < 0:
             return
-        self.setCurrentCell(row, 0)
+        # 右键落在哪个格就选中哪个格（隐藏的勾选列回退到首个数据列），
+        # 保证“修改记录/删除”始终作用于右键所在的这条记录
+        col = self.columnAt(pos.x())
+        if col <= 0:
+            col = 1
+        self.clearSelection()
+        self.setCurrentCell(row, col)
         menu = QMenu(self)
         act_edit = menu.addAction("修改记录")
-        act_delete = menu.addAction("删除选中行")
+        act_copy = menu.addAction("复制记录")
+        menu.addSeparator()
+        act_delete = menu.addAction("删除记录")
         chosen = menu.exec(self.viewport().mapToGlobal(pos))
         if chosen == act_edit:
             self.edit_requested.emit(row)
+        elif chosen == act_copy:
+            self.record_copy_requested.emit(row)
         elif chosen == act_delete:
             self.delete_requested.emit(row)
 

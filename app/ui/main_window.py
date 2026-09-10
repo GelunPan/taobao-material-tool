@@ -296,11 +296,12 @@ class MainWindow(QMainWindow):
         self.table.image_copy_requested.connect(self.on_copy_image)
         self.table.image_add_requested.connect(self.on_add_images_requested)
         self.table.edit_requested.connect(self.on_edit_record)
+        self.table.record_copy_requested.connect(self.on_copy_record)
         self.table.delete_requested.connect(self.on_delete_record)
         self.table.selection_changed.connect(self.on_selection_changed)
         right_layout.addWidget(self.table)
 
-        tip_label = QLabel("提示：双击图片复制到剪贴板，右键查看大图/粘贴/删除；点图片格的 + 可从文件添加，也可选中后按 Ctrl+V 粘贴")
+        tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；任意格右键或点“修改记录”可编辑该条；双击图片复制，Ctrl+V 粘贴")
         tip_label.setObjectName("tip")
         right_layout.addWidget(tip_label)
 
@@ -308,7 +309,8 @@ class MainWindow(QMainWindow):
         bottom_layout = QHBoxLayout()
         self.btn_add = QPushButton("新增记录")
         self.btn_edit = QPushButton("修改记录")
-        self.btn_delete = QPushButton("删除选中行")
+        self.btn_copy = QPushButton("复制记录")
+        self.btn_delete = QPushButton("删除记录")
         self.btn_export = QPushButton("导出Excel")
         # 主操作按钮样式
         self.btn_add.setProperty("primary", True)
@@ -320,6 +322,7 @@ class MainWindow(QMainWindow):
 
         bottom_layout.addWidget(self.btn_add)
         bottom_layout.addWidget(self.btn_edit)
+        bottom_layout.addWidget(self.btn_copy)
         bottom_layout.addWidget(self.btn_delete)
         self.selection_label = QLabel("已选 0 条")
         self.selection_label.setObjectName("tip")
@@ -336,6 +339,7 @@ class MainWindow(QMainWindow):
         self.btn_add.clicked.connect(self.on_add_record)
         # clicked 信号自带 bool(checked)，用 lambda 隔离，避免 False 被当作行号传入
         self.btn_edit.clicked.connect(lambda _checked=False: self.on_edit_record())
+        self.btn_copy.clicked.connect(lambda _checked=False: self.on_copy_record())
         self.btn_delete.clicked.connect(lambda _checked=False: self.on_delete_record())
         self.btn_export.clicked.connect(self.on_export)
         self.btn_search.clicked.connect(self.on_search)
@@ -496,8 +500,9 @@ class MainWindow(QMainWindow):
         row = self.table.currentRow()
         if row >= 0:
             return row
-        rows = self.table.selectionModel().selectedRows()
-        return rows[0].row() if rows else -1
+        # 单元格选择模式下 selectedRows 常为空，回退到任意被选中的格所在行
+        selected = self.table.selectionModel().selectedIndexes()
+        return selected[0].row() if selected else -1
 
     def on_delete_record(self, row=None):
         """删除记录：row 为 None 时取当前选中行（按钮），否则为右键菜单指定的行"""
@@ -546,6 +551,34 @@ class MainWindow(QMainWindow):
         self.refresh_table()
         self.refresh_shop_tree()
         self.save_data()
+
+    def on_copy_record(self, row=None):
+        """复制记录：与修改一致弹出预填表单，确认后在原记录之后插入一条相同记录"""
+        if not self.current_shop:
+            QMessageBox.information(self, "提示", "请先选择店铺")
+            return
+        # bool 是 int 子类：误传入信号 bool 时统一按“未指定行”处理
+        if not isinstance(row, int) or isinstance(row, bool):
+            row = self._current_table_row()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选中要复制的记录")
+            return
+        record_index = self.table.rendered_index(row)
+        records = self.repo.get_records(self.current_shop)
+        old_record = records[record_index]
+
+        dialog = AddRecordDialog(self, record=old_record)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_record = dialog.get_data()
+        if not new_record:
+            return
+        # 插到原记录正后方，并在刷新后选中新复制出的这一行
+        new_pos = self.repo.insert_record(self.current_shop, record_index, new_record)
+        self.refresh_table()
+        self.refresh_shop_tree()
+        self.save_data()
+        self.table.setCurrentCell(new_pos, 1)
 
     def on_paste_image_requested(self, row, col, field_name):
         """处理表格中的粘贴图片请求：保存图片并覆盖更新记录"""

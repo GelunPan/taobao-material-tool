@@ -76,6 +76,14 @@ class ShopRepository:
         self.ensure_shop(shop_name)
         self.shops[shop_name].append(record)
 
+    def insert_record(self, shop_name: str, after_index: int, record: dict) -> int:
+        """把记录插入到 after_index 之后（复制记录用），返回插入位置；越界时追加到末尾"""
+        self.ensure_shop(shop_name)
+        records = self.shops[shop_name]
+        pos = max(0, min(after_index + 1, len(records)))
+        records.insert(pos, record)
+        return pos
+
     def remove_record(self, shop_name: str, index: int) -> None:
         self.shops[shop_name].pop(index)
 

@@ -25,8 +25,9 @@ RECORD_FIELDS = [
     "helper",       # 补手
     "review",       # 买家秀评价
     "image_paths",  # 评价图片（多张，列表）
+    "product_url",  # 商品链接（文本，放在图片列右侧）
 ]
-TABLE_HEADERS = ["商品ID", "规格图", "规格", "标题", "链接主图", "补手", "买家秀评价", "图片"]
+TABLE_HEADERS = ["商品ID", "规格图", "规格", "标题", "链接主图", "补手", "买家秀评价", "图片", "商品链接"]
 
 # 单张图片字段 / 多张图片字段（均渲染为图片单元格）
 SINGLE_IMAGE_FIELDS = {"spec_image", "link_image"}
@@ -37,12 +38,14 @@ IMAGE_FIELDS = SINGLE_IMAGE_FIELDS | MULTI_IMAGE_FIELDS
 # 顺序对应 RECORD_FIELDS；表格最前面还有一列固定宽度的“选择”列（见 SELECT_COLUMN_WIDTH）
 # 所有数据列均可手动拖拽宽度、拖动表头换位；普通列按内容收缩并夹在上下限之间，
 # 弹性列（标题/评价）自动瓜分剩余空间，窗口缩小时同步自适应缩小
-TABLE_COLUMN_MODES = [0, 0, 0, 1, 0, 0, 1, 0]
+TABLE_COLUMN_MODES = [0, 0, 0, 1, 0, 0, 1, 0, 1]  # 商品链接为弹性列，URL 较长自动占剩余空间
 TABLE_DEFAULT_COL_WIDTH = 90     # 普通文本列的较小默认宽度（内容更短时收缩到内容宽度）
 TABLE_SHORT_COL_MAX_WIDTH = 200  # 普通文本列按内容自适应的宽度上限，防止超长内容把列撑爆
 TABLE_STRETCH_MIN_WIDTH = 120    # 弹性列最小宽度：总空间不够时不再压缩，改为出横向滚动条
 SELECT_COLUMN_WIDTH = 48       # 最左侧勾选列宽（表头为全选复选框）
 SELECT_COL_HEADER = ""         # 勾选列表头留空（放置全选复选框）
+TABLE_COL_INIT_SCALE = 0.6     # 各数据列初始宽度按设计值的 60% 呈现，更紧凑
+ROW_HEADER_WIDTH = 28          # 左侧行号（垂直表头）宽度：数字清晰可读，两位数不挤压
 
 # ---------- 表格行高（下限保底，高度完全随内容自适应，长文本自动换行全部展示） ----------
 TABLE_ROW_MIN_HEIGHT = 105     # 行高下限：单张缩略图(90)+单元格内边距，再补 item padding
@@ -76,4 +79,4 @@ FULL_IMAGE_MAX_SIZE = 800     # 查看大图最大边长
 IMAGE_EXT = "PNG"             # 粘贴/导入图片保存格式
 
 # ---------- Excel 导出 ----------
-EXPORT_COLUMN_WIDTHS = [15, 30, 20, 40, 30, 15, 50, 30]
+EXPORT_COLUMN_WIDTHS = [15, 30, 20, 40, 30, 15, 50, 30, 50]

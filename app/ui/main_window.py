@@ -2,10 +2,12 @@
 
 只负责界面组织与事件响应，数据读写走 ShopRepository，图片/导出走服务层。
 """
+from copy import deepcopy
+
 from PyQt6.QtCore import (
     Qt, QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, pyqtProperty,
 )
-from PyQt6.QtGui import QBrush, QColor, QCursor, QImage
+from PyQt6.QtGui import QBrush, QColor, QCursor, QIcon, QImage
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -105,6 +107,10 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
+        # 应用图标（标题栏/任务栏左上角）：素材库 app/assets/logo.png，不存在则忽略
+        logo = config.ASSETS_DIR / "logo.png"
+        if logo.exists():
+            self.setWindowIcon(QIcon(str(logo)))
         main_layout = QHBoxLayout(central_widget)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -288,7 +294,11 @@ class MainWindow(QMainWindow):
 
         self.current_shop_label = QLabel("请选择左侧店铺")
         self.current_shop_label.setObjectName("title")
+        self.current_shop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 店铺名居中、略加大加粗
+        self.current_shop_label.setStyleSheet("font-size: 18px; font-weight: 600;")
         right_layout.addWidget(self.current_shop_label)
+        self.record_panel = right_widget
 
         self.table = RecordTable()
         self.table.image_paste_requested.connect(self.on_paste_image_requested)
@@ -296,11 +306,13 @@ class MainWindow(QMainWindow):
         self.table.image_copy_requested.connect(self.on_copy_image)
         self.table.image_add_requested.connect(self.on_add_images_requested)
         self.table.edit_requested.connect(self.on_edit_record)
+        self.table.record_copy_requested.connect(self.on_copy_record)
         self.table.delete_requested.connect(self.on_delete_record)
+        self.table.cell_edited.connect(self.on_cell_edited)
         self.table.selection_changed.connect(self.on_selection_changed)
         right_layout.addWidget(self.table)
 
-        tip_label = QLabel("提示：双击图片复制到剪贴板，右键查看大图/粘贴/删除；点图片格的 + 可从文件添加，也可选中后按 Ctrl+V 粘贴")
+        tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；任意图片格（含多图格空白处）右键或按 Ctrl+V 粘贴图片；双击图片复制")
         tip_label.setObjectName("tip")
         right_layout.addWidget(tip_label)
 
@@ -308,7 +320,8 @@ class MainWindow(QMainWindow):
         bottom_layout = QHBoxLayout()
         self.btn_add = QPushButton("新增记录")
         self.btn_edit = QPushButton("修改记录")
-        self.btn_delete = QPushButton("删除选中行")
+        self.btn_copy = QPushButton("复制记录")
+        self.btn_delete = QPushButton("删除记录")
         self.btn_export = QPushButton("导出Excel")
         # 主操作按钮样式
         self.btn_add.setProperty("primary", True)
@@ -320,6 +333,7 @@ class MainWindow(QMainWindow):
 
         bottom_layout.addWidget(self.btn_add)
         bottom_layout.addWidget(self.btn_edit)
+        bottom_layout.addWidget(self.btn_copy)
         bottom_layout.addWidget(self.btn_delete)
         self.selection_label = QLabel("已选 0 条")
         self.selection_label.setObjectName("tip")
@@ -336,6 +350,7 @@ class MainWindow(QMainWindow):
         self.btn_add.clicked.connect(self.on_add_record)
         # clicked 信号自带 bool(checked)，用 lambda 隔离，避免 False 被当作行号传入
         self.btn_edit.clicked.connect(lambda _checked=False: self.on_edit_record())
+        self.btn_copy.clicked.connect(lambda _checked=False: self.on_copy_record())
         self.btn_delete.clicked.connect(lambda _checked=False: self.on_delete_record())
         self.btn_export.clicked.connect(self.on_export)
         self.btn_search.clicked.connect(self.on_search)
@@ -389,7 +404,7 @@ class MainWindow(QMainWindow):
         self.repo.rename_shop(old_name, new_name)
         if self.current_shop == old_name:
             self.current_shop = new_name
-            self.current_shop_label.setText(f"当前店铺：{new_name}")
+            self.current_shop_label.setText(new_name)
         self.refresh_shop_tree()
         self.save_data()
 
@@ -415,7 +430,7 @@ class MainWindow(QMainWindow):
 
     def on_shop_selected(self, item, column):
         self.current_shop = item.text(0) if item.parent() is None else item.parent().text(0)
-        self.current_shop_label.setText(f"当前店铺：{self.current_shop}")
+        self.current_shop_label.setText(self.current_shop)
         self.refresh_table()
 
     def on_shop_double_clicked(self, item, column):
@@ -473,6 +488,9 @@ class MainWindow(QMainWindow):
         """按当前店铺重新渲染表格"""
         records = self.repo.get_records(self.current_shop) if self.current_shop else []
         self.table.render(records)
+        # 左侧栏收起时右侧表格保持完整列宽（不被压到字段看不见）
+        if hasattr(self, 'record_panel'):
+            self.record_panel.setMinimumWidth(self.table.total_min_width())
         self.selection_label.setText("已选 0 条")
 
     def on_add_record(self):
@@ -496,8 +514,9 @@ class MainWindow(QMainWindow):
         row = self.table.currentRow()
         if row >= 0:
             return row
-        rows = self.table.selectionModel().selectedRows()
-        return rows[0].row() if rows else -1
+        # 单元格选择模式下 selectedRows 常为空，回退到任意被选中的格所在行
+        selected = self.table.selectionModel().selectedIndexes()
+        return selected[0].row() if selected else -1
 
     def on_delete_record(self, row=None):
         """删除记录：row 为 None 时取当前选中行（按钮），否则为右键菜单指定的行"""
@@ -507,6 +526,25 @@ class MainWindow(QMainWindow):
         # bool 是 int 子类：误传入信号 bool 时统一按“未指定行”处理
         if not isinstance(row, int) or isinstance(row, bool):
             row = self._current_table_row()
+        # 批量选择模式下勾选了至少一条：批量删除
+        checked = self.table.selected_rendered_indices()
+        if not self.table.isColumnHidden(0) and checked:
+            reply = QMessageBox.question(
+                self, "确认删除", f"确定要删除选中的 {len(checked)} 条记录吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            for ridx in sorted(checked, reverse=True):
+                self.repo.remove_record(self.current_shop, ridx)
+            self.refresh_table()
+            self.refresh_shop_tree()
+            self.save_data()
+            self.table.set_selection_mode(False)  # 操作完成自动收回复选框
+            QToolTip.showText(
+                QCursor.pos(), f"已删除 {len(checked)} 条记录", self, msecShowTime=1500,
+            )
+            return
         if row < 0:
             QMessageBox.information(self, "提示", "请先选中要删除的行")
             return
@@ -530,6 +568,11 @@ class MainWindow(QMainWindow):
         # bool 是 int 子类：误传入信号 bool 时统一按“未指定行”处理
         if not isinstance(row, int) or isinstance(row, bool):
             row = self._current_table_row()
+        # 批量选择模式下勾了多条：不支持同时修改
+        checked = self.table.selected_rendered_indices()
+        if not self.table.isColumnHidden(0) and len(checked) >= 2:
+            QMessageBox.information(self, "提示", "多条记录不能同时修改！")
+            return
         if row < 0:
             QMessageBox.information(self, "提示", "请先选中要修改的行")
             return
@@ -547,13 +590,70 @@ class MainWindow(QMainWindow):
         self.refresh_shop_tree()
         self.save_data()
 
+    def on_copy_record(self, row=None):
+        """复制记录：与修改一致弹出预填表单，确认后在原记录之后插入一条相同记录"""
+        if not self.current_shop:
+            QMessageBox.information(self, "提示", "请先选择店铺")
+            return
+        # bool 是 int 子类：误传入信号 bool 时统一按“未指定行”处理
+        if not isinstance(row, int) or isinstance(row, bool):
+            row = self._current_table_row()
+        # 批量选择模式下勾选了至少一条：直接逐条复制，不再弹表单
+        checked = self.table.selected_rendered_indices()
+        if not self.table.isColumnHidden(0) and checked:
+            records = self.repo.get_records(self.current_shop)
+            # 从后往前插入，前面的复制不会顶乱后面记录的位置
+            for ridx in sorted(checked, reverse=True):
+                self.repo.insert_record(self.current_shop, ridx, deepcopy(records[ridx]))
+            self.refresh_table()
+            self.refresh_shop_tree()
+            self.save_data()
+            self.table.set_selection_mode(False)  # 复制完成自动收回复选框
+            QToolTip.showText(
+                QCursor.pos(), f"已复制 {len(checked)} 条记录", self, msecShowTime=1500,
+            )
+            return
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选中要复制的记录")
+            return
+        record_index = self.table.rendered_index(row)
+        records = self.repo.get_records(self.current_shop)
+        old_record = records[record_index]
+
+        dialog = AddRecordDialog(self, record=old_record)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_record = dialog.get_data()
+        if not new_record:
+            return
+        # 插到原记录正后方，并在刷新后选中新复制出的这一行
+        new_pos = self.repo.insert_record(self.current_shop, record_index, new_record)
+        self.refresh_table()
+        self.refresh_shop_tree()
+        self.save_data()
+        self.table.setCurrentCell(new_pos, 1)
+
+    def on_cell_edited(self, row, field, text):
+        """文本格双击就地编辑完成：直接写回该字段并保存，行高随之重排（不重渲表格）"""
+        if not self.current_shop:
+            return
+        record_index = self.table.rendered_index(row)
+        self.repo.set_record_field(self.current_shop, record_index, field, text)
+        self.save_data()
+        self.table._adjust_row_heights()
+
     def on_paste_image_requested(self, row, col, field_name):
         """处理表格中的粘贴图片请求：保存图片并覆盖更新记录"""
         filepath, new_counter = ImageService.save_clipboard_image(
             QApplication.clipboard(), self.repo.images_dir, self.repo.image_counter
         )
         if not filepath:
-            QMessageBox.information(self, "提示", "剪贴板中没有图片，请先截图或复制图片文件后再按Ctrl+V")
+            # 轻提示：无需确认、2.6 秒自动消失，不打断操作
+            QToolTip.showText(
+                QCursor.pos(),
+                "剪贴板中不是图片，请先复制图片（截图或图片文件）后再粘贴",
+                self, msecShowTime=2600,
+            )
             return
         self.repo.image_counter = new_counter
         record_index = self.table.rendered_index(row)

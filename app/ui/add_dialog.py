@@ -214,6 +214,8 @@ class AddRecordDialog(QDialog):
         self.spec_input = QLineEdit()
         self.title_input = QLineEdit()
         self.helper_input = QLineEdit()
+        self.product_url_input = QLineEdit()
+        self.product_url_input.setPlaceholderText("https://item.taobao.com/...")
         self.review_input = QTextEdit()
         self.review_input.setMaximumHeight(96)
 
@@ -222,6 +224,7 @@ class AddRecordDialog(QDialog):
         form_layout.addRow(_form_label("标题:"), self.title_input)
         form_layout.addRow(_form_label("补手:"), self.helper_input)
         form_layout.addRow(_form_label("买家秀评价:"), self.review_input)
+        form_layout.addRow(_form_label("商品链接:"), self.product_url_input)
         layout.addLayout(form_layout)
 
         # ---------- 图片选择（浅色分组容器，标签列与上方文本区同宽对齐） ----------
@@ -268,6 +271,7 @@ class AddRecordDialog(QDialog):
         self.title_input.setText(record.get("title", ""))
         self.helper_input.setText(record.get("helper", ""))
         self.review_input.setPlainText(record.get("review", ""))
+        self.product_url_input.setText(record.get("product_url", ""))
 
         self.spec_picker.set_path(record.get("spec_image", ""))
         self.link_picker.set_path(record.get("link_image", ""))
@@ -289,4 +293,5 @@ class AddRecordDialog(QDialog):
             "helper": self.helper_input.text().strip(),
             "review": self.review_input.toPlainText().strip(),
             "image_paths": self.review_picker.paths,
+            "product_url": self.product_url_input.text().strip(),
         }

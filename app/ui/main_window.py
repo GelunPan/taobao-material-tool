@@ -5,11 +5,15 @@
 from copy import deepcopy
 
 from PyQt6.QtCore import (
-    Qt, QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, QTimer, pyqtProperty,
+    QRect, Qt, QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, QTimer, pyqtProperty,
+    pyqtSignal, QVariantAnimation,
 )
-from PyQt6.QtGui import QBrush, QColor, QCursor, QIcon, QImage
+from PyQt6.QtWidgets import QAbstractItemView
+from PyQt6.QtGui import QBrush, QColor, QCursor, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
+    QColorDialog,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -40,6 +44,7 @@ SHOP_PANEL_DEFAULT_WIDTH = 250   # 展开时的默认宽度（也是首次展开
 SHOP_RAIL_WIDTH = 38             # 收起后保留的窄轨宽度（放置展开按钮）
 PANEL_ANIM_DURATION = 220        # 折叠/展开过渡时长（毫秒），InOutCubic 缓动
 PANEL_COLLAPSE_THRESHOLD = 80   # 拖动分割条使左栏窄于该宽度，松手即自动收起
+PANEL_EXPAND_SWITCH_THRESHOLD = 120  # 折叠态拖拽时，窄轨宽超过该值才切出完整面板（先宽后显）
 
 
 class SplitterWidthAnimator(QObject):
@@ -72,6 +77,158 @@ class SplitterWidthAnimator(QObject):
     panelWidth = pyqtProperty(int, fget=_get_width, fset=_set_width)
 
 
+class SortableShopTree(QTreeWidget):
+    """可拖拽排序的店铺树：只允许顶层店铺项拖拽，松手后发出顺序变更信号并高亮被移动项。
+
+    展开/收起箭头用 drawBranch 代码绘制，支持顺时针丝滑旋转动效：
+    - 收起=0 度（向右），展开=90 度（向下），点击时 QVariantAnimation 插值，InOutCubic 缓动 250ms
+    - 顶层 item 设 ItemIsDragEnabled 且去掉 ItemIsDropEnabled，避免被拖成另一个店铺的子项
+    - 子项（素材数量）同时去掉 Drag 和 Drop，完全不可参与拖拽
+    """
+    shop_order_changed = pyqtSignal(list)  # 新的店铺名顺序（list[str]）
+    BRANCH_ARROW_SIZE = 13  # 箭头绘制尺寸（px），和 18px indentation 搭配不拥挤
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setIndentation(24)  # branch 区域宽度，给箭头留空间
+        self._dragged_name = None
+        # 旋转动效状态
+        self._arrow_pm = QPixmap(str(config.ASSETS_DIR / "tree_arrow.svg"))
+        self._branch_angles = {}   # id(item) -> 当前角度（QTreeWidgetItem 不可哈希，用 id）（0=收起向右，90=展开向下）
+        self._branch_anims = {}    # id(item) -> QVariantAnimation（防止被 GC）
+        self.itemExpanded.connect(self._on_item_expanded)
+        self.itemCollapsed.connect(self._on_item_collapsed)
+
+    # ---------- 展开/收起旋转动效 ----------
+    def _on_item_expanded(self, item):
+        if item.parent() is None:
+            # 首次展开（refresh 重建后）直接设终值，不播动画；用户手动展开才走动画
+            if id(item) not in self._branch_angles:
+                self._branch_angles[id(item)] = 90.0
+                self.viewport().update()
+            else:
+                self._animate_branch(item, 90.0)
+
+    def _on_item_collapsed(self, item):
+        if item.parent() is None:
+            if id(item) not in self._branch_angles:
+                self._branch_angles[id(item)] = 0.0
+                self.viewport().update()
+            else:
+                self._animate_branch(item, 0.0)
+
+    def _animate_branch(self, item, target):
+        """从当前角度丝滑过渡到目标角度（顺时针），InOutCubic 缓动 250ms"""
+        start = self._branch_angles.get(id(item), 90.0 if target == 0.0 else 0.0)
+        if id(item) in self._branch_anims:
+            self._branch_anims[id(item)].stop()
+        anim = QVariantAnimation(self)
+        anim.setDuration(250)
+        anim.setStartValue(start)
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.valueChanged.connect(lambda v, it=item: self._update_branch_angle(it, v))
+        anim.finished.connect(lambda: self._branch_anims.pop(id(item), None))
+        self._branch_anims[id(item)] = anim
+        anim.start()
+
+    def _update_branch_angle(self, item, angle):
+        self._branch_angles[id(item)] = float(angle)
+        self.viewport().update()
+
+    def drawBranch(self, painter, rect, index):
+        """Qt6 里 drawBranch 可能不被调用，实际箭头绘制走 paintEvent（保留此方法备用）"""
+        super().drawBranch(painter, rect, index)
+
+    def paintEvent(self, event):
+        """重写绘制：默认绘制完成后，在每个有子项的顶层店铺的 branch 区域画旋转箭头"""
+        super().paintEvent(event)
+        if self._arrow_pm.isNull():
+            return
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        view_h = self.viewport().height()
+        ind = self.indentation()
+        for i in range(self.topLevelItemCount()):
+            item = self.topLevelItem(i)
+            if item.childCount() == 0:
+                continue
+            rect = self.visualItemRect(item)
+            # 只画可见区域内的
+            if rect.y() + rect.height() < 0 or rect.y() > view_h:
+                continue
+            # branch 区域：viewport 左侧 indentation 宽度（visualItemRect 的 x 是文字起始位，不含 branch）
+            branch_rect = QRect(0, rect.y(), ind, rect.height())
+            angle = self._branch_angles.get(id(item), 90.0 if item.isExpanded() else 0.0)
+            self._draw_rotated_arrow(painter, branch_rect, angle)
+        painter.end()
+
+    def _draw_rotated_arrow(self, painter, rect, angle):
+        """在 rect 中心绘制顺时针旋转 angle 度的箭头"""
+        if self._arrow_pm.isNull() or rect.width() <= 0 or rect.height() <= 0:
+            return
+        size = min(self.BRANCH_ARROW_SIZE, rect.width() - 2, rect.height() - 2)
+        if size <= 0:
+            return
+        scaled = self._arrow_pm.scaled(
+            size, size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.translate(rect.center())
+        painter.rotate(angle)
+        painter.translate(-scaled.width() / 2, -scaled.height() / 2)
+        painter.drawPixmap(0, 0, scaled)
+        painter.restore()
+
+    # ---------- 拖拽排序 ----------
+    def startDrag(self, supportedActions):
+        """只允许顶层店铺项开始拖拽；子项（素材数量）直接忽略"""
+        item = self.currentItem()
+        if item is None or item.parent() is not None:
+            return
+        self._dragged_name = item.text(0)
+        super().startDrag(supportedActions)
+
+    def dropEvent(self, event):
+        """拖拽结束：父类完成 item 移动 -> 读新顺序发信号 -> 高亮被移动项"""
+        if self._dragged_name is None:
+            super().dropEvent(event)
+            return
+        name = self._dragged_name
+        super().dropEvent(event)
+        new_order = [self.topLevelItem(i).text(0) for i in range(self.topLevelItemCount())]
+        self.shop_order_changed.emit(new_order)
+        self._highlight_moved(name)
+        self._dragged_name = None
+
+    def _highlight_moved(self, name):
+        """被移动项短暂高亮：背景色从淡蓝经两帧过渡到透明，模拟自然回落"""
+        for i in range(self.topLevelItemCount()):
+            item = self.topLevelItem(i)
+            if item.text(0) != name:
+                continue
+            colors = ["#D6EAF8", "#EBF5FB", "#F4F9FD", ""]
+            def step(idx=0):
+                if idx >= len(colors):
+                    return
+                c = colors[idx]
+                if c:
+                    item.setBackground(0, QBrush(QColor(c)))
+                else:
+                    item.setBackground(0, QBrush())
+                QTimer.singleShot(55, lambda: step(idx + 1))
+            step()
+            break
+
+
 class CollapsibleStack(QStackedWidget):
     """分栏折叠容器：最小尺寸提示归零。
 
@@ -99,6 +256,8 @@ class MainWindow(QMainWindow):
         self._shop_expanded_width = SHOP_PANEL_DEFAULT_WIDTH
         self._panel_sized = False  # 首帧显示后再精确设定初始栏宽
         self._user_dragging = False  # 用户是否正在拖动分割条
+        self._panel_switched_during_drag = False  # 本次拖拽中是否已从窄轨切到完整面板
+        self._shop_label_colors = {}  # 店铺名 -> 背景色（按店铺持久化记忆）
 
         self.init_ui()
         self.load_data()
@@ -135,6 +294,8 @@ class MainWindow(QMainWindow):
         # QSplitterHandle 没有按压信号，用事件过滤器捕获鼠标按下/松开
         self._split_handle = self.splitter.handle(1)
         self._split_handle.installEventFilter(self)
+        # 拖拽过程中实时监听宽度：折叠态拖过阈值才切出完整面板（先宽后显，与收起相反）
+        self.splitter.splitterMoved.connect(self._on_splitter_dragging)
 
     def showEvent(self, event):
         # 首帧显示时按分割器实际可用宽度精确设定左栏宽度（避免按比例缩放产生偏差）
@@ -168,7 +329,7 @@ class MainWindow(QMainWindow):
         title_row.addWidget(self.btn_toggle_tree)
         left_layout.addLayout(title_row)
 
-        self.shop_tree = QTreeWidget()
+        self.shop_tree = SortableShopTree()
         self.shop_tree.setMinimumWidth(0)
         self.shop_tree.setHeaderLabels(["店铺名称"])
         # 关闭 Qt 默认双击展开，由 on_shop_double_clicked 统一控制，避免双重切换抵消
@@ -178,6 +339,8 @@ class MainWindow(QMainWindow):
         # 右键菜单：店铺仅支持重命名
         self.shop_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.shop_tree.customContextMenuRequested.connect(self._on_shop_tree_menu)
+        # 拖拽排序：松手后更新数据层顺序并持久化
+        self.shop_tree.shop_order_changed.connect(self.on_shop_order_changed)
         left_layout.addWidget(self.shop_tree)
 
         shop_btn_layout = QHBoxLayout()
@@ -247,12 +410,22 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def _on_split_handle_pressed(self) -> None:
-        """开始拖动分割条：若当前是收起态，立即换回完整面板跟随拖拽宽度"""
+        """开始拖动分割条：折叠态不立即切页面，先让窄轨跟随宽度增长，
+        拖过阈值（_on_splitter_dragging）才切出完整面板——先宽后显，与收起相反"""
         self._user_dragging = True
+        self._panel_switched_during_drag = False
         if self._shop_collapsed:
             self.panel_animation.stop()
+
+    def _on_splitter_dragging(self, pos: int, index: int) -> None:
+        """拖拽中实时判定：折叠态窄轨拖过阈值才切出完整面板，避免店铺列表突然跳出"""
+        if not self._user_dragging or not self._shop_collapsed or self._panel_switched_during_drag:
+            return
+        width = self.splitter.sizes()[0]
+        if width >= PANEL_EXPAND_SWITCH_THRESHOLD:
             self.shop_stack.setCurrentIndex(0)
             self._shop_collapsed = False
+            self._panel_switched_during_drag = True
 
     def _on_split_handle_released(self) -> None:
         """松手判定：拖到阈值以下自动吸附收起；否则记住展开宽度"""
@@ -295,8 +468,11 @@ class MainWindow(QMainWindow):
         self.current_shop_label = QLabel("请选择左侧店铺")
         self.current_shop_label.setObjectName("title")
         self.current_shop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # 店铺名居中、略加大加粗
-        self.current_shop_label.setStyleSheet("font-size: 18px; font-weight: 600;")
+        # 店铺名居中、略加大加粗；右键可设置填充色（按店铺记忆）
+        self._shop_label_base_style = "font-size: 18px; font-weight: 600;"
+        self.current_shop_label.setStyleSheet(self._shop_label_base_style)
+        self.current_shop_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.current_shop_label.customContextMenuRequested.connect(self._on_shop_label_context_menu)
         right_layout.addWidget(self.current_shop_label)
         self.record_panel = right_widget
 
@@ -312,7 +488,7 @@ class MainWindow(QMainWindow):
         self.table.selection_changed.connect(self.on_selection_changed)
         right_layout.addWidget(self.table)
 
-        tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；任意图片格（含多图格空白处）右键或按 Ctrl+V 粘贴图片；双击图片复制")
+        tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；图片格双击查看大图、Ctrl+C 复制、Del 删除、Ctrl+V 粘贴；右键更多操作")
         tip_label.setObjectName("tip")
         right_layout.addWidget(tip_label)
 
@@ -428,9 +604,93 @@ class MainWindow(QMainWindow):
         self.refresh_shop_tree()
         self.save_data()
 
+    def _on_shop_label_context_menu(self, pos) -> None:
+        """店铺名右键：填充色（加深预设 + 自选）+ 字体颜色（预设 + 自选）+ 清除，按店铺记忆"""
+        menu = QMenu(self)
+        # —— 填充色（背景）：稍深一点，方便区分不同店铺 ——
+        bg_menu = menu.addMenu("填充色")
+        bg_presets = [
+            ("#B3D9FF", "蓝"), ("#B3E6B3", "绿"), ("#FFD9A0", "橙"),
+            ("#FFB3B3", "红"), ("#D9B3FF", "紫"), ("#FFEC99", "黄"),
+            ("#D0D0D0", "灰"),
+        ]
+        for hex_color, name in bg_presets:
+            act = bg_menu.addAction(f"  {name}")
+            act.setData(("bg", hex_color))
+        bg_menu.addSeparator()
+        act_bg_more = bg_menu.addAction("更多颜色...")
+        act_bg_more.setData(("bg", "more"))
+        act_bg_clear = bg_menu.addAction("清除填充色")
+        act_bg_clear.setData(("bg", None))
+        # —— 字体颜色 ——
+        text_menu = menu.addMenu("字体颜色")
+        text_presets = [
+            ("#000000", "黑色"), ("#1F3A93", "深蓝"), ("#C0392B", "深红"),
+            ("#1E8449", "深绿"), ("#6C3483", "深紫"), ("#D35400", "橙色"),
+            ("#2C3E50", "深灰"),
+        ]
+        for hex_color, name in text_presets:
+            act = text_menu.addAction(f"  {name}")
+            act.setData(("text", hex_color))
+        text_menu.addSeparator()
+        act_text_more = text_menu.addAction("更多颜色...")
+        act_text_more.setData(("text", "more"))
+        act_text_clear = text_menu.addAction("恢复默认字体色")
+        act_text_clear.setData(("text", None))
+        # —— 执行 ——
+        chosen = menu.exec(self.current_shop_label.mapToGlobal(pos))
+        if chosen is None:
+            return
+        data = chosen.data()
+        if not isinstance(data, tuple):
+            return
+        kind, value = data
+        if value == "more":
+            title = "选择填充色" if kind == "bg" else "选择字体颜色"
+            color = QColorDialog.getColor(parent=self, title=title)
+            if color.isValid():
+                value = color.name()
+            else:
+                return
+        self._apply_shop_label_style(
+            bg_color=value if kind == "bg" else None,
+            text_color=value if kind == "text" else None,
+            replace_bg=(kind == "bg"),
+            replace_text=(kind == "text"),
+        )
+
+    def _apply_shop_label_style(self, bg_color=None, text_color=None,
+                                  replace_bg=True, replace_text=True) -> None:
+        """设置当前店铺名样式（背景色 + 字体色），按店铺名记忆。
+        replace_bg/replace_text 为 True 时才覆盖对应维度（用于菜单只改其中一项）。
+        颜色为 None 表示清除该维度。"""
+        cur = {"bg": None, "text": None}
+        if self.current_shop:
+            cur = self._shop_label_colors.get(self.current_shop, {"bg": None, "text": None})
+            if replace_bg:
+                cur["bg"] = bg_color
+            if replace_text:
+                cur["text"] = text_color
+            if cur["bg"] is None and cur["text"] is None:
+                self._shop_label_colors.pop(self.current_shop, None)
+            else:
+                self._shop_label_colors[self.current_shop] = cur
+        # 实时应用到标签
+        parts = [self._shop_label_base_style]
+        if cur.get("bg"):
+            parts.append(f"background-color: {cur['bg']};")
+        if cur.get("text"):
+            parts.append(f"color: {cur['text']};")
+        if cur.get("bg"):
+            parts.append("border-radius: 6px;")
+        self.current_shop_label.setStyleSheet(" ".join(parts))
+
     def on_shop_selected(self, item, column):
         self.current_shop = item.text(0) if item.parent() is None else item.parent().text(0)
         self.current_shop_label.setText(self.current_shop)
+        # 恢复该店铺之前设置的填充色/字体色（没设置过则清除）
+        saved = self._shop_label_colors.get(self.current_shop, {"bg": None, "text": None})
+        self._apply_shop_label_style(bg_color=saved.get("bg"), text_color=saved.get("text"))
         self.refresh_table()
 
     def on_shop_double_clicked(self, item, column):
@@ -455,9 +715,15 @@ class MainWindow(QMainWindow):
             shop_item = QTreeWidgetItem([shop_name])
             # 店名不可在树上直接编辑（改名统一走重命名，保证能保存）
             shop_item.setFlags(shop_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            # 拖拽排序：顶层店铺可拖，但不可作为 drop 目标（避免被拖成另一个店铺的子项）
+            shop_item.setFlags(shop_item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
+            shop_item.setFlags(shop_item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
             self.shop_tree.addTopLevelItem(shop_item)
             count_item = QTreeWidgetItem([f"素材数量：{len(records)}"])
             count_item.setFlags(count_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            # 子项（素材数量）完全不参与拖拽
+            count_item.setFlags(count_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+            count_item.setFlags(count_item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
             count_item.setForeground(0, QBrush(QColor("#909399")))
             shop_item.addChild(count_item)
         if self._all_expanded:
@@ -482,6 +748,11 @@ class MainWindow(QMainWindow):
                 self.shop_tree.setCurrentItem(item)
                 self.on_shop_selected(item, 0)
                 break
+
+    def on_shop_order_changed(self, new_order):
+        """拖拽排序结束：按新顺序重排数据层店铺并持久化（不触发 tree 重建，保留动效）"""
+        self.repo.reorder_shops(new_order)
+        self.save_data()
 
     # ==================== 素材记录管理 ====================
     def refresh_table(self):
@@ -661,9 +932,9 @@ class MainWindow(QMainWindow):
             return
         self.repo.image_counter = new_counter
         record_index = self.table.rendered_index(row)
-        # 粘贴覆盖原有图片：单图列直接替换，多图列清空后只保留新粘贴的一张
+        # 粘贴不替换：多图列追加到末尾，单图列直接替换（只有一张）
         if field_name in config.MULTI_IMAGE_FIELDS:
-            self.repo.set_record_field(self.current_shop, record_index, field_name, [filepath])
+            self.repo.append_record_image(self.current_shop, record_index, filepath)
         else:
             self.repo.set_record_field(self.current_shop, record_index, field_name, filepath)
         self.refresh_table()

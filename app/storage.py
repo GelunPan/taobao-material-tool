@@ -62,6 +62,17 @@ class ShopRepository:
     def delete_shop(self, name: str) -> None:
         del self.shops[name]
 
+    def reorder_shops(self, new_order: list[str]) -> None:
+        """按新顺序重排店铺（拖拽排序用），保持 dict 插入顺序"""
+        new_shops = {}
+        for name in new_order:
+            if name in self.shops:
+                new_shops[name] = self.shops[name]
+        for name, records in self.shops.items():
+            if name not in new_shops:
+                new_shops[name] = records
+        self.shops = new_shops
+
     # ---------- 素材记录 ----------
     def ensure_shop(self, name: str) -> None:
         """确保店铺存在（记录所属店铺不存在时兜底创建）"""

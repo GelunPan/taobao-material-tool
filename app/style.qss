@@ -154,6 +154,7 @@ QTreeWidget {
     border-radius: 8px;
     padding: 6px 4px;
     outline: none;
+    indentation: 18px;
 }
 
 QTreeWidget::item {
@@ -184,6 +185,8 @@ QTreeWidget::branch:selected {
 QTreeWidget::branch:hover {
     background-color: #F5F7FA;
 }
+
+/* 展开/收起箭头由 SortableShopTree.drawBranch 代码绘制（支持旋转动效），QSS 不再设 image */
 
 /* 展开/折叠小按钮 */
 #treeToggle {

@@ -56,6 +56,7 @@ from ..config import (
     TABLE_HEADERS,
     TABLE_ITEM_PAD_H,
     TABLE_ITEM_PAD_V,
+    TABLE_LINK_COLUMN_WIDTH,
     TABLE_MULTI_PER_ROW,
     TABLE_MULTI_THUMB,
     TABLE_MULTI_BTN_H,
@@ -480,6 +481,10 @@ class RecordTable(QTableWidget):
                         + 2 * TABLE_CELL_PAD
                     )
                     width = content_w + TABLE_ITEM_PAD_H + TABLE_GRID
+                elif field == "product_url":
+                    # 商品链接列固定宽度，无论 URL 多长都不变宽（跳过紧凑化）
+                    self.setColumnWidth(col, TABLE_LINK_COLUMN_WIDTH)
+                    continue
                 else:
                     # 按当前内容自适应，再夹在“较小默认值”与上限之间
                     self.resizeColumnToContents(col)
@@ -552,7 +557,8 @@ class RecordTable(QTableWidget):
                     self._render_image_cell(row, col, [value] if value else [], field, multi=False)
                 else:
                     text = "" if value is None else str(value)
-                    item = self._make_readonly_item(text)
+                    # 文本列保留可编辑标志：双击直接进入就地编辑，编辑结束由 cell_edited 落库
+                    item = QTableWidgetItem(text)
                     if text:
                         # 完整内容已靠换行展示，tooltip 仅作悬停速览
                         item.setToolTip(text)
@@ -635,7 +641,63 @@ class RecordTable(QTableWidget):
     def keyPressEvent(self, event) -> None:
         if event.matches(QKeySequence.StandardKey.Paste) and self._paste_to_current_cell():
             return
+        if event.matches(QKeySequence.StandardKey.Copy):
+            # 图片列：复制图片本身；非图片列（含点左侧行号选中整行）：复制整条记录到下方
+            if not self._copy_current_cell_image():
+                row = self.currentRow()
+                if row >= 0:
+                    self.record_copy_requested.emit(row)
+                    return
+            return
+        if event.matches(QKeySequence.StandardKey.Delete) and self._delete_current_cell_image():
+            return
         super().keyPressEvent(event)
+
+    def _delete_current_cell_image(self) -> bool:
+        """当前焦点单元格是图片列时，删除最后点击的那张图（没点过则删第一张）"""
+        row, col = self.currentRow(), self.currentColumn()
+        if row < 0 or col <= 0:
+            return False
+        field = RECORD_FIELDS[col - 1]
+        if field not in IMAGE_FIELDS:
+            return False
+        # 优先删除用户最后点击的那张图（需属于当前行）
+        last = getattr(self, '_last_clicked_image', None)
+        if last and last[0] == row and len(last) >= 3:
+            self.image_delete_requested.emit(row, field, last[2])
+            return True
+        # 否则从单元格 widget 里找第一张带 stored_index 的缩略图
+        widget = self.cellWidget(row, col)
+        if widget is not None:
+            for label in widget.findChildren(QLabel):
+                si = label.property("stored_index")
+                if si is not None:
+                    self.image_delete_requested.emit(row, field, si)
+                    return True
+        return False
+
+    def _copy_current_cell_image(self) -> bool:
+        """当前焦点单元格是图片列时，复制最后点击的那张图（没点过则取第一张）到剪贴板"""
+        row, col = self.currentRow(), self.currentColumn()
+        if row < 0 or col <= 0:
+            return False
+        field = RECORD_FIELDS[col - 1]
+        if field not in IMAGE_FIELDS:
+            return False
+        # 优先复制用户最后点击的那张图（需属于当前行）
+        last = getattr(self, '_last_clicked_image', None)
+        if last and last[0] == row and last[1]:
+            self.image_copy_requested.emit(last[1])
+            return True
+        # 否则从单元格 widget 里找第一张带 image_path 的缩略图
+        widget = self.cellWidget(row, col)
+        if widget is not None:
+            for label in widget.findChildren(QLabel):
+                p = label.property("image_path")
+                if p:
+                    self.image_copy_requested.emit(p)
+                    return True
+        return False
 
     def _paste_to_current_cell(self) -> bool:
         """当前焦点单元格是图片列时，发出粘贴请求"""
@@ -694,15 +756,16 @@ class RecordTable(QTableWidget):
     def make_thumb(self, thumb_size: int, view_paths: list, index: int) -> QLabel:
         """创建一张缩略图占位 QLabel（图片稍后懒加载填入）。
 
-        双击=复制该图片到剪贴板；查看大图/删除等操作统一收进右键菜单。
+        双击=查看大图（复制已由 Ctrl+C / 右键承担）；删除等操作收进右键菜单。
         """
         thumb = QLabel()
         thumb.setFixedSize(thumb_size, thumb_size)
         thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
         thumb.setStyleSheet(_THUMB_STYLE)
-        thumb.setToolTip("双击复制图片，右键可查看大图或删除")
+        thumb.setToolTip("双击查看大图，Ctrl+C 复制，右键可删除")
         path = view_paths[index]
-        thumb.mouseDoubleClickEvent = lambda event, p=path: self.image_copy_requested.emit(p)
+        thumb.setProperty("image_path", path)
+        thumb.mouseDoubleClickEvent = lambda event, ps=view_paths, i=index: self.show_image_gallery(ps, i)
         return thumb
 
     def enqueue_image_job(self, row: int, col: int, thumb: QLabel, size: int, path: str) -> None:
@@ -727,8 +790,13 @@ class RecordTable(QTableWidget):
                    vi=view_index, si=stored_index, m=multi:
             self._show_image_menu(a, pos, r, c, f, ps, vi, si, m)
         )
-        # cellWidget 会拦截鼠标事件，表格不会自动更新 currentCell，这里手动补齐
-        anchor.mousePressEvent = lambda event, r=row, c=col: self.select_image_cell(r, c)
+        # cellWidget 会拦截鼠标事件，表格不会自动更新 currentCell，这里手动补齐；
+        # 同时记录最后点击的图片（含 stored_index），供 Ctrl+C 复制 / Del 删除
+        anchor.setProperty("stored_index", stored_index)
+        def _on_thumb_press(event, r=row, c=col, p=view_paths[view_index], si=stored_index):
+            self.select_image_cell(r, c)
+            self._last_clicked_image = (r, p, si)
+        anchor.mousePressEvent = _on_thumb_press
 
     def _show_image_menu(self, anchor: QWidget, pos, row: int, col: int,
                          field_name: str, view_paths: list, view_index: int,
@@ -736,6 +804,7 @@ class RecordTable(QTableWidget):
         self.setCurrentCell(row, col)
         menu = QMenu(self)
         act_view = menu.addAction("查看大图")
+        act_copy_img = menu.addAction("复制图片（Ctrl+C）")
         act_paste = menu.addAction("粘贴图片（Ctrl+V）")
         menu.addSeparator()
         act_delete = menu.addAction("删除此图片" if multi else "移除图片")
@@ -745,6 +814,8 @@ class RecordTable(QTableWidget):
         chosen = menu.exec(anchor.mapToGlobal(pos))
         if chosen == act_view:
             self.show_image_gallery(view_paths, view_index)
+        elif chosen == act_copy_img:
+            self.image_copy_requested.emit(view_paths[view_index])
         elif chosen == act_paste:
             self.image_paste_requested.emit(row, col, field_name)
         elif chosen == act_delete:

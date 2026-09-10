@@ -615,9 +615,12 @@ class RecordTable(QTableWidget):
         pass
 
     def total_min_width(self) -> int:
-        """所有列最小宽 + 行号列 + 面板边距：左侧栏收起时右侧表格按此下限保持完整列宽，
-        超出部分出横向滚动条，不再把列压到字段都看不见"""
-        body = sum(self._col_mins.values()) if self._col_mins else 0
+        """右侧表格的最小展示宽度：行号列 + 商品ID 到“图片”列（含）的最小宽 + 面板边距。
+        左侧栏收起时右侧至少完整显示到“图片”列；最右的“商品链接”列可被挤出视口，
+        以横向滚动条查看，不再把前面的列压到字段都看不见"""
+        # 表格列：0=勾选,1..8=商品ID..图片,9=商品链接（可牺牲）
+        keep_cols = [c for c in self._col_mins if c <= 8]
+        body = sum(self._col_mins[c] for c in keep_cols) if keep_cols else 0
         return int(body + self.verticalHeader().width() + 24)
 
     def selected_count(self) -> int:

@@ -1,4 +1,4 @@
-"""淘宝登录对话框：内置 QWebEngineView 浏览器，用户扫码登录后真实验证 cookie。
+﻿"""淘宝登录对话框：内置 QWebEngineView 浏览器，用户扫码登录后真实验证 cookie。
 
 风控应对：
 - 设置真实桌面 Chrome UA + 完整 viewport，模拟真实浏览器
@@ -15,10 +15,11 @@
 - 二次验证：确认后访问 i.taobao.com，未被重定向到登录页才算真成功
 """
 from PyQt6.QtCore import QTimer, QUrl, pyqtSignal
-from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from .. import config
 from ..utils.logger import get_logger
 
 logger = get_logger("taobao.login")
@@ -28,6 +29,9 @@ LOGIN_URL = "https://login.taobao.com/member/login.jhtml"
 
 # 登录态验证页：未登录会被重定向到登录页，登录后才是"我的淘宝"
 VERIFY_URL = "https://i.taobao.com/my_taobao.htm"
+
+# 首页暖身 URL：抓商品前先访问，模拟真实用户浏览路径
+HOME_URL = "https://www.taobao.com/"
 
 # 真正登录后才会下发的硬标志 cookie（未登录访客绝不会有）
 # - unb: 淘宝用户ID，纯数字
@@ -92,9 +96,19 @@ class TaobaoLoginDialog(QDialog):
         self._confirm_bar.hide()
         layout.addWidget(self._confirm_bar)
 
-        # 独立 profile，cookie 隔离，设置真实桌面 UA
+        # 独立 profile，cookie 隔离，设置真实桌面 UA。
+        # 关键：把 profile 持久化到磁盘目录，保留浏览器指纹/cache/cookie，
+        # 后续抓商品数据复用同一个"真实浏览器"，避免全新 profile 被风控识别
         self._profile = QWebEngineProfile("taobao-login", self)
         self._profile.setHttpUserAgent(DESKTOP_CHROME_UA)
+        profile_dir = str(config.DATA_DIR / "taobao_browser_profile")
+        self._profile.setPersistentStoragePath(profile_dir)
+        self._profile.setCachePath(profile_dir + "/cache")
+        self._profile.setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies
+        )
+        # 注入反指纹脚本：隐藏自动化标志（navigator.webdriver 等），降低风控识别
+        self._inject_stealth_script(self._profile)
         self._cookie_store = self._profile.cookieStore()
         self._cookie_store.cookieAdded.connect(self._on_cookie_added)
 
@@ -115,6 +129,44 @@ class TaobaoLoginDialog(QDialog):
         self.browser.urlChanged.connect(self._on_url_changed)
 
     # ---------- cookie 收集 ----------
+    @staticmethod
+    def _inject_stealth_script(profile: QWebEngineProfile) -> None:
+        """注入反指纹脚本：抹掉 QWebEngine/自动化浏览器的明显特征。
+
+        淘宝风控最基础的检测就是 navigator.webdriver 是否为 true，
+        以及 navigator.plugins/languages 是否像真实浏览器。
+        脚本在每个页面（含子框架）创建时最先执行。
+        """
+        js = r"""
+        // 1. webdriver 必须为 undefined（关键）
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        // 2. 语言与插件伪装成真实 Chrome
+        Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+                {name: 'PDF Viewer'}, {name: 'Chrome PDF Viewer'},
+                {name: 'Chromium PDF Viewer'}, {name: 'Microsoft Edge PDF Viewer'}
+            ]
+        });
+        // 3. chrome 对象
+        if (!window.chrome) { window.chrome = { runtime: {} }; }
+        // 4. WebGL 供应商伪装（降低 canvas/WebGL 指纹异常）
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(p) {
+            if (p === 37445) return 'Google Inc. (Intel)';
+            if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            return getParameter.apply(this, [p]);
+        };
+        """
+        script = QWebEngineScript()
+        script.setName("stealth")
+        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        script.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
+        script.setRunsOnSubFrames(True)
+        script.setSourceCode(js)
+        profile.scripts().insert(script)
+        logger.debug("已注入反指纹脚本")
+
     def _on_cookie_added(self, cookie) -> None:
         """收集浏览器中的 cookie，严格检测登录硬标志"""
         try:

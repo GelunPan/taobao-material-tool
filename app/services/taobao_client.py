@@ -12,9 +12,10 @@ import requests
 # PyQt6 导入（用于 QWebEngineView 渲染动态页面抓取数据）
 from PyQt6.QtCore import QEventLoop, QTimer, QUrl
 from PyQt6.QtNetwork import QNetworkCookie
-from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
+from .. import config
 from ..utils.logger import get_logger
 
 logger = get_logger("taobao")
@@ -221,21 +222,18 @@ class TaobaoClient:
         url = f"https://item.taobao.com/item.htm?id={item_id}"
         logger.info("目标 URL: %s", url)
 
-        # 创建独立 profile，设置桌面 UA
-        profile = QWebEngineProfile(f"taobao-fetch-{item_id}", None)
+        # 复用登录时的持久化浏览器 profile（同目录），cookie/指纹/cache 都在，
+        # 不再新建空 profile、不再手动注入 cookie——全新空 profile 会被淘宝风控秒识别
+        profile = QWebEngineProfile("taobao-login", None)
         profile.setHttpUserAgent(DESKTOP_UA)
-
-        # 注入登录 cookie
-        cookie_store = profile.cookieStore()
-        cookie_count = 0
-        for c in self.session.cookies:
-            qcookie = QNetworkCookie(c.name.encode("utf-8"), c.value.encode("utf-8"))
-            if c.domain:
-                qcookie.setDomain(c.domain)
-            qcookie.setPath(c.path or "/")
-            cookie_store.setCookie(qcookie, QUrl("https://www.taobao.com"))
-            cookie_count += 1
-        logger.debug("已注入 %d 条 cookie 到浏览器", cookie_count)
+        profile_dir = str(config.DATA_DIR / "taobao_browser_profile")
+        profile.setPersistentStoragePath(profile_dir)
+        profile.setCachePath(profile_dir + "/cache")
+        profile.setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies
+        )
+        self._inject_stealth(profile)
+        logger.info("使用持久化浏览器 profile: %s", profile_dir)
 
         # 创建浏览器（不显示，后台渲染）
         page = QWebEnginePage(profile, None)
@@ -243,21 +241,32 @@ class TaobaoClient:
         view.setPage(page)
         view.resize(1280, 900)
 
-        # 用事件循环等待页面加载和渲染
         loop = QEventLoop()
-        state = {"finished": False, "ok": False}
+        state = {"stage": "home", "finished": False, "ok": False}
+
+        def after_home():
+            # 首页暖身完成，进入商品页（模拟真实用户从首页点进商品）
+            logger.info("首页暖身完成，进入商品页")
+            state["stage"] = "item"
+            view.setUrl(QUrl(url))
 
         def on_load_finished(ok):
-            state["finished"] = True
             state["ok"] = ok
-            logger.info("页面加载完成: ok=%s，等待 %dms 渲染", ok, wait_ms)
+            if state["stage"] == "home":
+                # 首页加载完成，停留 2.5 秒模拟浏览，再进商品页
+                logger.info("淘宝首页加载完成: ok=%s，停留 2500ms 后进入商品页", ok)
+                QTimer.singleShot(2500, after_home)
+                return
+            state["finished"] = True
+            logger.info("商品页加载完成: ok=%s，等待 %dms 渲染", ok, wait_ms)
             QTimer.singleShot(wait_ms, loop.quit)
 
         page.loadFinished.connect(on_load_finished)
         QTimer.singleShot(timeout_ms, loop.quit)
 
-        logger.info("开始加载页面...")
-        view.setUrl(QUrl(url))
+        # 先访问淘宝首页暖身，而不是直接打商品页（真实用户路径）
+        logger.info("先访问淘宝首页暖身...")
+        view.setUrl(QUrl("https://www.taobao.com/"))
         loop.exec()
 
         if not state["finished"]:
@@ -354,6 +363,34 @@ class TaobaoClient:
         logger.info("===== 抓取完成: %s，标题=%s，图片=%d张，下载=%d个 =====",
                     item_id, result["title"], len(result["images"]), len(result["saved_files"]))
         return result
+
+    @staticmethod
+    def _inject_stealth(profile) -> None:
+        """注入反指纹脚本：抹掉自动化浏览器特征，降低淘宝风控识别"""
+        js = r"""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+                {name: 'PDF Viewer'}, {name: 'Chrome PDF Viewer'},
+                {name: 'Chromium PDF Viewer'}, {name: 'Microsoft Edge PDF Viewer'}
+            ]
+        });
+        if (!window.chrome) { window.chrome = { runtime: {} }; }
+        const gp = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(p) {
+            if (p === 37445) return 'Google Inc. (Intel)';
+            if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            return gp.apply(this, [p]);
+        };
+        """
+        s = QWebEngineScript()
+        s.setName("stealth")
+        s.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        s.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
+        s.setRunsOnSubFrames(True)
+        s.setSourceCode(js)
+        profile.scripts().insert(s)
 
     def _run_js_sync(self, page, js_code: str):
         """同步执行 JavaScript 并返回结果（用 QEventLoop 等待异步回调）"""

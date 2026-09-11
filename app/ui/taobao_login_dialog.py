@@ -1,18 +1,21 @@
-"""淘宝登录对话框：内置 QWebEngineView 浏览器，用户扫码登录后手动确认提取 cookie。
+"""淘宝登录对话框：内置 QWebEngineView 浏览器，用户扫码登录后真实验证 cookie。
 
 风控应对：
-- 设置真实桌面 Chrome UA，避免 QWebEngine 默认 UA 被识别
-- 检测到登录后不自动关闭，显示确认栏让用户手动确认，避免过快操作触发风控
-- 用户确认后才发出 cookie 信号，给足时间让页面完全加载、cookie 稳定
+- 设置真实桌面 Chrome UA + 完整 viewport，模拟真实浏览器
+- 未登录访客也会下发 _tb_token_/cookie2/sgcookie 等匿名 cookie，不能据此判登录成功；
+  真正登录后才有的硬标志是 unb（用户ID，非空数字）和 tracknick（昵称）
+- 检测到登录 cookie 后不自动关闭，显示确认栏让用户手动确认
+- 用户确认后自动跳转"我的淘宝"做真实验证：未登录会被踢回登录页，
+  只有真正加载出登录态页面才发出 cookie 信号、提示登录成功
 
 设计要点：
 - 用独立 QWebEngineProfile（"taobao-login"），避免污染默认浏览器配置
 - 监听 cookieStore.cookieAdded 收集所有 cookie
-- 登录成功双检测：①URL 跳转到淘宝首页/个人中心；②cookie 中出现登录关键字段
-- 检测到登录后显示底部确认栏，用户点击"确认登录"后才关闭
+- 登录判定：cookie 中出现非空的 unb（或 tracknick），才认为登录成功
+- 二次验证：确认后访问 i.taobao.com，未被重定向到登录页才算真成功
 """
 from PyQt6.QtCore import QTimer, QUrl, pyqtSignal
-from PyQt6.QtWebEngineCore import QWebEngineProfile
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -20,20 +23,16 @@ from ..utils.logger import get_logger
 
 logger = get_logger("taobao.login")
 
-
-# 登录成功的标志：URL 跳转到这些域名
-LOGIN_SUCCESS_HOSTS = (
-    "www.taobao.com",
-    "h5.m.taobao.com",
-    "my.taobao.com",
-    "main.m.taobao.com",
-)
-
-# 登录成功的关键 cookie 名（出现这些基本说明已登录）
-LOGIN_COOKIE_KEYS = ("_tb_token_", "cookie2", "sgcookie", "unb")
-
 # 登录页 URL
-LOGIN_URL = "https://login.taobao.com/"
+LOGIN_URL = "https://login.taobao.com/member/login.jhtml"
+
+# 登录态验证页：未登录会被重定向到登录页，登录后才是"我的淘宝"
+VERIFY_URL = "https://i.taobao.com/my_taobao.htm"
+
+# 真正登录后才会下发的硬标志 cookie（未登录访客绝不会有）
+# - unb: 淘宝用户ID，纯数字
+# - tracknick: 用户昵称
+LOGGED_IN_COOKIE_KEYS = ("unb", "tracknick")
 
 # 真实桌面 Chrome UA（降低风控识别概率）
 DESKTOP_CHROME_UA = (
@@ -44,10 +43,11 @@ DESKTOP_CHROME_UA = (
 
 
 class TaobaoLoginDialog(QDialog):
-    """淘宝登录对话框：内置浏览器扫码登录，用户确认后发出 cookie 列表。
+    """淘宝登录对话框：内置浏览器扫码登录，真实验证后发出 cookie 列表。
 
     信号：
-        cookies_received(list[dict]): 用户确认登录后发出，每个元素是 {"name","value","domain","path"}
+        cookies_received(list[dict]): 验证登录成功后发出，
+            每个元素是 {"name","value","domain","path"}
     """
 
     cookies_received = pyqtSignal(list)
@@ -55,7 +55,6 @@ class TaobaoLoginDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("登录淘宝")
-        # 淘宝登录页是桌面端左右布局（二维码+密码登录），默认给足尺寸确保二维码完整显示
         self.resize(720, 860)
         self.setMinimumSize(640, 780)
 
@@ -64,13 +63,12 @@ class TaobaoLoginDialog(QDialog):
         layout.setSpacing(0)
 
         # 顶部提示
-        tip = QLabel("请使用淘宝 APP 扫码登录，登录成功后点击下方「确认登录」按钮完成")
-        tip.setStyleSheet("padding: 5px 12px; color: #606266; font-size: 12px; background: #F5F7FA;")
-        layout.addWidget(tip)
+        self.tip = QLabel("请使用淘宝 APP 扫码登录，登录成功后点击下方「确认登录」")
+        self.tip.setStyleSheet("padding: 5px 12px; color: #606266; font-size: 12px; background: #F5F7FA;")
+        layout.addWidget(self.tip)
 
         # 浏览器
         self.browser = QWebEngineView()
-        # 页面缩小到 80%，确保二维码和登录表单完整显示在对话框内
         self.browser.setZoomFactor(0.8)
         layout.addWidget(self.browser)
 
@@ -79,7 +77,7 @@ class TaobaoLoginDialog(QDialog):
         self._confirm_bar.setStyleSheet("background: #E8F5E9; border-top: 1px solid #A5D6A7;")
         confirm_layout = QHBoxLayout(self._confirm_bar)
         confirm_layout.setContentsMargins(12, 8, 12, 8)
-        self._confirm_label = QLabel("✓ 检测到登录成功，请确认页面已登录后点击按钮完成")
+        self._confirm_label = QLabel("✓ 检测到登录，请确认页面已登录后点击按钮完成验证")
         self._confirm_label.setStyleSheet("color: #2E7D32; font-size: 13px;")
         self._confirm_btn = QPushButton("确认登录")
         self._confirm_btn.setStyleSheet(
@@ -94,20 +92,20 @@ class TaobaoLoginDialog(QDialog):
         self._confirm_bar.hide()
         layout.addWidget(self._confirm_bar)
 
-        # 独立 profile，cookie 隔离，设置真实 UA
+        # 独立 profile，cookie 隔离，设置真实桌面 UA
         self._profile = QWebEngineProfile("taobao-login", self)
         self._profile.setHttpUserAgent(DESKTOP_CHROME_UA)
         self._cookie_store = self._profile.cookieStore()
         self._cookie_store.cookieAdded.connect(self._on_cookie_added)
 
         # 用自定义 page 绑定 profile
-        from PyQt6.QtWebEngineCore import QWebEnginePage
         self._page = QWebEnginePage(self._profile, self.browser)
         self.browser.setPage(self._page)
 
         # cookie 收集
         self._cookies: dict[str, dict] = {}
         self._login_detected = False  # 是否已检测到登录（显示确认栏）
+        self._verifying = False       # 是否正在验证阶段
         self._finished = False
 
         # 加载登录页（先清除 profile 里的旧 cookie，强制重新登录）
@@ -118,7 +116,7 @@ class TaobaoLoginDialog(QDialog):
 
     # ---------- cookie 收集 ----------
     def _on_cookie_added(self, cookie) -> None:
-        """收集浏览器中的 cookie，同时检测登录关键字段"""
+        """收集浏览器中的 cookie，严格检测登录硬标志"""
         try:
             name = bytes(cookie.name()).decode("utf-8", errors="ignore")
             value = bytes(cookie.value()).decode("utf-8", errors="ignore")
@@ -132,20 +130,37 @@ class TaobaoLoginDialog(QDialog):
             "domain": cookie.domain(),
             "path": cookie.path() if hasattr(cookie, "path") else "/",
         }
-        # 检测到登录关键字段，显示确认栏（不自动关闭，让用户手动确认）
-        if not self._login_detected and name in LOGIN_COOKIE_KEYS:
-            logger.info("检测到登录关键字段: %s，显示确认栏", name)
+        # 严格判定：只有出现非空的 unb（或 tracknick）才算真登录。
+        # _tb_token_/cookie2/sgcookie 等未登录访客也有，不能作为判据
+        if not self._login_detected and self._has_real_login():
+            logger.info("检测到登录硬标志: unb=%s, tracknick=%s，显示确认栏",
+                        self._cookies.get("unb", {}).get("value", "")[:8],
+                        self._cookies.get("tracknick", {}).get("value", ""))
             self._show_confirm_bar()
+
+    def _has_real_login(self) -> bool:
+        """是否真正登录：unb 存在且非空（非 0），或 tracknick 存在"""
+        unb = self._cookies.get("unb", {}).get("value", "").strip()
+        if unb and unb != "0":
+            return True
+        tracknick = self._cookies.get("tracknick", {}).get("value", "").strip()
+        return bool(tracknick)
 
     # ---------- 登录成功检测 ----------
     def _on_url_changed(self, url: QUrl) -> None:
-        """URL 变化时检测是否登录成功（辅助检测）"""
-        if self._login_detected:
-            return
+        """验证阶段：检测是否被踢回登录页"""
         url_str = url.toString()
         logger.debug("URL 变化: %s", url_str[:120])
-        if any(host in url_str for host in LOGIN_SUCCESS_HOSTS):
-            # 跳到了淘宝首页/个人中心，显示确认栏
+        if self._verifying:
+            # 验证阶段若被重定向到登录页，说明 cookie 无效
+            if "login.taobao.com" in url_str or ("login" in url_str.lower() and "taobao" in url_str):
+                logger.warning("验证失败：被重定向到登录页")
+                QTimer.singleShot(500, self._verify_failed)
+            return
+        if self._login_detected:
+            return
+        # 登录阶段：扫码后淘宝会跳 www.taobao.com 等，辅助判登录
+        if "www.taobao.com" in url_str and self._has_real_login():
             logger.info("检测到登录成功跳转: %s", url_str[:120])
             self._show_confirm_bar()
 
@@ -155,25 +170,83 @@ class TaobaoLoginDialog(QDialog):
             return
         self._login_detected = True
         self._confirm_bar.show()
-        # 调整对话框高度给确认栏留空间
-        self.resize(self.width(), self.height() + 40)
         logger.info("检测到登录成功，显示确认栏等待用户确认（已收集 %d 条 cookie）", len(self._cookies))
 
+    # ---------- 确认后真实验证 ----------
     def _on_confirm_login(self) -> None:
-        """用户点击确认登录：发出 cookie 信号并关闭"""
-        if self._finished:
+        """用户点击确认登录：先真实验证，通过后才发出 cookie"""
+        if self._finished or self._verifying:
             return
-        cookies = list(self._cookies.values())
-        # 基本验证：至少有一条 cookie，且包含登录关键字段
-        if not cookies or not any(c["name"] in LOGIN_COOKIE_KEYS for c in cookies):
-            logger.warning("用户确认登录，但未检测到有效登录 cookie（共 %d 条）", len(cookies))
-            self._confirm_label.setText("⚠ 未检测到有效登录 cookie，请确认页面已登录后再试")
+        # 基本验证：必须有真登录 cookie
+        if not self._has_real_login():
+            logger.warning("用户确认登录，但未检测到有效登录 cookie（unb/tracknick）")
+            self._confirm_label.setText("⚠ 未检测到有效登录态，请确认页面已登录后再试")
             self._confirm_label.setStyleSheet("color: #E65100; font-size: 13px;")
             return
+        # 进入验证阶段：禁用按钮，访问"我的淘宝"真实验证
+        self._verifying = True
+        self._confirm_btn.setEnabled(False)
+        self._confirm_btn.setText("验证中...")
+        self._confirm_label.setText("正在访问「我的淘宝」验证登录状态，请稍候...")
+        self.tip.setText("正在验证登录态，请勿关闭窗口...")
+        logger.info("开始真实验证：访问 %s", VERIFY_URL)
+        # 监听验证页加载完成
+        try:
+            self._page.loadFinished.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._page.loadFinished.connect(self._on_verify_loaded)
+        # 12 秒超时兜底
+        QTimer.singleShot(12000, self._verify_timeout)
+        self.browser.setUrl(QUrl(VERIFY_URL))
+
+    def _on_verify_loaded(self, ok: bool) -> None:
+        """验证页加载完成：等渲染后判定是否被踢回登录页"""
+        if not self._verifying or self._finished:
+            return
+        logger.info("验证页加载完成: ok=%s，等待渲染后判定", ok)
+        # 重定向链里会多次触发 loadFinished，每次重置 timer；
+        # _on_url_changed 若检测到跳登录页会提前处理
+        QTimer.singleShot(2500, self._finish_verify)
+
+    def _verify_timeout(self) -> None:
+        """验证超时：按成功处理（能打开且没跳登录就说明 cookie 有效）"""
+        if not self._verifying or self._finished:
+            return
+        logger.info("验证等待超时，按当前 URL 判定")
+        self._finish_verify()
+
+    def _finish_verify(self) -> None:
+        """验证页加载完成后的判定：没被踢到登录页即通过"""
+        if not self._verifying or self._finished:
+            return
+        url_str = self.browser.url().toString()
+        logger.info("验证完成，最终 URL: %s", url_str[:120])
+        if "login.taobao.com" in url_str or ("login" in url_str.lower() and "taobao" in url_str):
+            self._verify_failed("验证失败：被重定向到登录页，cookie 无效")
+            return
+        # 真的加载出登录态页面
+        cookies = list(self._cookies.values())
         self._finished = True
-        logger.info("用户确认登录成功，共 %d 条 cookie，发出信号", len(cookies))
+        self._verifying = False
+        unb = self._cookies.get("unb", {}).get("value", "")
+        logger.info("真实验证通过，共 %d 条 cookie（unb=%s），发出信号", len(cookies), unb)
+        self.tip.setText("✓ 登录验证成功！")
         self.cookies_received.emit(cookies)
-        self.accept()
+        QTimer.singleShot(400, self.accept)
+
+    def _verify_failed(self, reason: str = "验证失败：未真正登录") -> None:
+        if self._finished:
+            return
+        logger.warning(reason)
+        self._verifying = False
+        self._confirm_btn.setEnabled(True)
+        self._confirm_btn.setText("确认登录")
+        self._confirm_label.setText(f"⚠ {reason}，请重新扫码登录后再确认")
+        self._confirm_label.setStyleSheet("color: #E65100; font-size: 13px;")
+        self.tip.setText("请使用淘宝 APP 扫码登录，登录成功后点击下方「确认登录」")
+        # 回到登录页
+        self.browser.setUrl(QUrl(LOGIN_URL))
 
     def reject(self) -> None:
         """用户取消：标记完成，避免延迟回调再触发"""

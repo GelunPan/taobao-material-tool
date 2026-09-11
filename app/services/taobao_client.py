@@ -1,4 +1,4 @@
-"""淘宝客户端：cookie 管理、登录状态检测、商品详情抓取。
+﻿"""淘宝客户端：cookie 管理、登录状态检测、商品详情抓取。
 
 当前阶段：登录获取 cookie + 商品详情抓取（标题、主图）；后续商品详情抓取、图片下载等功能在此扩展。
 cookie 以 JSON 持久化到本地，避免每次启动重新登录。
@@ -159,7 +159,11 @@ class TaobaoClient:
     def _has_login_cookie(self) -> bool:
         """本地 cookie 是否包含登录关键字段"""
         names = {c.name for c in self.session.cookies}
-        return any(k in names for k in LOGIN_COOKIE_KEYS)
+        unb = self.session.cookies.get("unb", "")
+        if unb and str(unb).strip() not in ("", "0"):
+            return True
+        tracknick = self.session.cookies.get("tracknick", "")
+        return bool(str(tracknick).strip())
 
     # ---------- 信息展示 ----------
     def cookie_summary(self) -> str:

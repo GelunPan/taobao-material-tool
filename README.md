@@ -83,26 +83,164 @@ taobao-material-tool/
 
 ---
 
-## 安装与运行
+## 环境部署
+
+### 环境要求
+
+| 依赖 | 版本要求 | 说明 |
+| --- | --- | --- |
+| Python | 3.9+（推荐 3.11/3.13） | 开发验证环境 3.13 |
+| Chrome 浏览器 | 任意较新版本 | **必须**，淘宝登录/抓取调用系统真实 Chrome（非自带 Chromium） |
+| Git | 任意 | 代码版本管理 |
+| 操作系统 | Windows 10/11 | 开发验证环境 Windows，理论上跨平台 |
+
+### 完整部署步骤
 
 ```bash
-# 1. 克隆仓库
+# ============================================
+# 1. 克隆仓库（二选一，或两个都配）
+# ============================================
+# GitHub 地址
 git clone https://github.com/GelunPan/taobao-material-tool.git
+# GitLab 地址（极狐GitLab）
+git clone https://jihulab.com/gelunpan/tb-tools.git
+
+# 进入项目目录（重要！必须在项目根目录运行后续命令）
 cd taobao-material-tool
 
-# 2. 安装依赖（建议使用虚拟环境）
+# ============================================
+# 2. 创建虚拟环境（推荐，避免污染全局 Python）
+# ============================================
+python -m venv venv
+# Windows 激活虚拟环境
+venv\Scripts\activate
+# macOS/Linux 激活
+# source venv/bin/activate
+
+# ============================================
+# 3. 安装 Python 依赖
+# ============================================
 pip install -r requirements.txt
+# 依赖清单：PyQt6、PyQt6-WebEngine、playwright、openpyxl、requests
 
-# 3. 安装 Playwright 浏览器驱动（首次使用淘宝模块需要）
+# ============================================
+# 4. 安装 Playwright 浏览器驱动（首次必须，淘宝模块需要）
+# ============================================
 playwright install chromium
+# 这一步会下载 Chromium 内核（约 150MB），只需执行一次
 
-# 4. 运行
+# ============================================
+# 5. 运行程序
+# ============================================
 python main.py
 ```
 
-> **依赖说明**：`PyQt6>=6.5`、`playwright>=1.40`、`openpyxl>=3.1`、`requests>=2.31`。
-> **淘宝登录**需要本机已安装 Chrome 浏览器（Playwright 调用系统真实 Chrome，非自带 Chromium）。
-> 首次启动会自动创建 `data/` 目录（数据、图片、日志、Chrome profile 都在这）。
+> **⚠️ 常见错误排查**
+> - **`can't open file 'main.py'`**：不在项目目录，先 `cd taobao-material-tool`
+> - **`ModuleNotFoundError: No module named 'playwright'`**：没装依赖，执行 `pip install -r requirements.txt`
+> - **`ModuleNotFoundError: No module named 'PyQt6'`**：同上
+> - **Playwright 报错 "Executable doesn't exist"**：没装浏览器驱动，执行 `playwright install chromium`
+> - **淘宝登录打不开 Chrome**：确认本机已安装 Chrome 浏览器，且在系统 PATH 中可被识别
+> - **首次启动慢**：正常，PyQt6 + Playwright 首次初始化需要几秒
+
+---
+
+## Git 工作流
+
+### 双远程配置
+
+本项目同时推送到 **GitLab（极狐）** 和 **GitHub** 两个远程，一次 push 同步到两个仓库。
+
+```bash
+# 查看当前远程配置
+git remote -v
+
+# 预期输出（origin 同时指向两个 push 地址）：
+# origin  https://jihulab.com/gelunpan/tb-tools.git (fetch)
+# origin  https://jihulab.com/gelunpan/tb-tools.git (push)
+# origin  https://github.com/GelunPan/taobao-material-tool.git (push)
+
+# 如果需要重新配置双远程：
+git remote set-url origin https://jihulab.com/gelunpan/tb-tools.git
+git remote set-url --add --push origin https://jihulab.com/gelunpan/tb-tools.git
+git remote set-url --add --push origin https://github.com/GelunPan/taobao-material-tool.git
+```
+
+### 日常工作流
+
+```bash
+# ============================================
+# 每天开工：先拉取最新代码
+# ============================================
+git pull origin main
+
+# ============================================
+# 开发：修改代码...
+# ============================================
+
+# ============================================
+# 提交：查看改动 → 暂存 → 提交
+# ============================================
+git status                    # 查看哪些文件改了
+git add -A                    # 暂存所有改动（或 git add <具体文件>）
+git commit -m "feat: 描述本次改动"  # 提交
+
+# 提交信息规范：
+# feat: 新功能
+# fix: 修复bug
+# docs: 文档更新
+# style: 样式/界面调整
+# refactor: 重构（不改变功能）
+# perf: 性能优化
+# chore: 构建/工具/依赖调整
+
+# ============================================
+# 推送：一次 push 同步到 GitLab + GitHub
+# ============================================
+git push origin main
+
+# 如果推送被拒绝（远程有新提交），先 pull 再 push：
+git pull origin main
+# 解决冲突后...
+git push origin main
+```
+
+### 常用 Git 命令速查
+
+```bash
+git log --oneline -10        # 查看最近10条提交
+git diff                      # 查看未暂存的改动
+git diff --staged             # 查看已暂存的改动
+git checkout -- <文件>        # 撤销某个文件的修改
+git reset HEAD <文件>         # 取消暂存某个文件
+git stash                     # 临时保存当前改动
+git stash pop                 # 恢复临时保存的改动
+git branch                    # 查看分支
+git log --graph --oneline     # 图形化查看提交历史
+```
+
+### 合并冲突处理
+
+```bash
+# 1. pull 时提示冲突，先看哪些文件冲突
+git status
+
+# 2. 打开冲突文件，搜索 <<<<<<< 标记，手动解决冲突
+#    <<<<<<< HEAD    （你的改动）
+#    ...
+#    =======        （分隔线）
+#    ...
+#    >>>>>>> origin/main  （远程的改动）
+
+# 3. 解决后暂存并提交
+git add <冲突文件>
+git commit -m "merge: 解决冲突"
+
+# 4. 推送
+git push origin main
+```
+
+> **⚠️ 注意**：`data/` 目录（数据、图片、cookie、日志、Chrome profile）已在 `.gitignore` 中，不会被 git 跟踪，不用担心本地数据被上传。
 
 ---
 

@@ -273,8 +273,14 @@ class AddRecordDialog(QDialog):
         self.review_input.setPlainText(record.get("review", ""))
         self.product_url_input.setText(record.get("product_url", ""))
 
-        self.spec_picker.set_path(record.get("spec_image", ""))
-        self.link_picker.set_path(record.get("link_image", ""))
+        _spec_img = record.get("spec_image", "")
+        if isinstance(_spec_img, list):
+            _spec_img = _spec_img[0] if _spec_img else ""
+        self.spec_picker.set_path(_spec_img)
+        _link_img = record.get("link_image", "")
+        if isinstance(_link_img, list):
+            _link_img = _link_img[0] if _link_img else ""
+        self.link_picker.set_path(_link_img)
         # 兼容旧版单图字段 image_path
         paths = record.get("image_paths")
         if paths is None:
@@ -286,10 +292,10 @@ class AddRecordDialog(QDialog):
         """获取输入的记录数据（字段名与 RECORD_FIELDS 对齐）"""
         return {
             "product_id": self.product_id_input.text().strip(),
-            "spec_image": self.spec_picker.path,
+            "spec_image": [self.spec_picker.path] if self.spec_picker.path else [],
             "spec": self.spec_input.text().strip(),
             "title": self.title_input.text().strip(),
-            "link_image": self.link_picker.path,
+            "link_image": [self.link_picker.path] if self.link_picker.path else [],
             "helper": self.helper_input.text().strip(),
             "review": self.review_input.toPlainText().strip(),
             "image_paths": self.review_picker.paths,

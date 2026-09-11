@@ -157,14 +157,19 @@ class TaobaoClient:
             logger.error("验证网络异常: %s", e)
             return False, f"网络异常：{e}"
 
+    def _get_cookie_value(self, name: str) -> str:
+        """安全获取 cookie 值（淘宝可能有多个同名 cookie 不同 domain/path，.get() 会报 ConflictError）"""
+        for c in self.session.cookies:
+            if c.name == name and c.value:
+                return str(c.value)
+        return ""
+
     def _has_login_cookie(self) -> bool:
-        """本地 cookie 是否包含登录关键字段"""
-        names = {c.name for c in self.session.cookies}
-        unb = self.session.cookies.get("unb", "")
-        if unb and str(unb).strip() not in ("", "0"):
+        """本地 cookie 是否包含登录关键字段（unb/tracknick，真正登录后才下发的硬标志）"""
+        unb = self._get_cookie_value("unb")
+        if unb and unb.strip() not in ("", "0"):
             return True
-        tracknick = self.session.cookies.get("tracknick", "")
-        return bool(str(tracknick).strip())
+        return bool(self._get_cookie_value("tracknick").strip())
 
     # ---------- 信息展示 ----------
     def cookie_summary(self) -> str:
@@ -172,7 +177,7 @@ class TaobaoClient:
         if not self._has_login_cookie():
             return "未登录"
         count = len(self.session.cookies)
-        unb = self.session.cookies.get("unb", "")
+        unb = self._get_cookie_value("unb")
         if unb:
             return f"已登录（{count} 条 cookie）"
         return f"已登录（{count} 条 cookie）"

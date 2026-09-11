@@ -18,27 +18,27 @@ APP_TITLE = "淘宝评价素材整理工具"
 # ---------- 素材记录字段（顺序即表格列顺序） ----------
 RECORD_FIELDS = [
     "product_id",   # 商品ID
-    "spec_image",   # 规格图（单张图片）
-    "spec",         # 规格
+    "link_image",   # 链接主图（多张图片）
     "title",        # 标题
-    "link_image",   # 链接主图（单张图片）
-    "helper",       # 补手
+    "spec_image",   # 规格图（多张图片，SKU图）
+    "spec",         # 规格
     "review",       # 买家秀评价
     "image_paths",  # 评价图片（多张，列表）
+    "helper",       # 补手
     "product_url",  # 商品链接（文本，放在图片列右侧）
 ]
-TABLE_HEADERS = ["商品ID", "规格图", "规格", "标题", "链接主图", "补手", "买家秀评价", "图片", "商品链接"]
+TABLE_HEADERS = ["商品ID", "链接主图", "标题", "规格图", "规格", "买家秀评价", "评价图片", "补手", "商品链接"]
 
 # 单张图片字段 / 多张图片字段（均渲染为图片单元格）
-SINGLE_IMAGE_FIELDS = {"spec_image", "link_image"}
-MULTI_IMAGE_FIELDS = {"image_paths"}
+SINGLE_IMAGE_FIELDS = set()
+MULTI_IMAGE_FIELDS = {"spec_image", "link_image", "image_paths"}
 IMAGE_FIELDS = SINGLE_IMAGE_FIELDS | MULTI_IMAGE_FIELDS
 
 # ---------- 表格列宽模式（0=按内容自适应的普通列, 1=弹性列瓜分剩余宽度） ----------
 # 顺序对应 RECORD_FIELDS；表格最前面还有一列固定宽度的“选择”列（见 SELECT_COLUMN_WIDTH）
 # 所有数据列均可手动拖拽宽度、拖动表头换位；普通列按内容收缩并夹在上下限之间，
 # 弹性列（标题/评价）自动瓜分剩余空间，窗口缩小时同步自适应缩小
-TABLE_COLUMN_MODES = [0, 0, 0, 1, 0, 0, 1, 0, 0]  # 商品链接为固定列，URL 多长都不变宽
+TABLE_COLUMN_MODES = [0, 0, 1, 0, 0, 1, 0, 0, 0]  # 标题/买家秀评价为弹性列
 TABLE_LINK_COLUMN_WIDTH = 120  # 商品链接列固定宽度
 TABLE_DEFAULT_COL_WIDTH = 90     # 普通文本列的较小默认宽度（内容更短时收缩到内容宽度）
 TABLE_SHORT_COL_MAX_WIDTH = 200  # 普通文本列按内容自适应的宽度上限，防止超长内容把列撑爆

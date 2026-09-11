@@ -6,10 +6,12 @@ from copy import deepcopy
 
 from PyQt6.QtCore import (
     QRect, Qt, QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, QTimer, pyqtProperty,
-    pyqtSignal, QVariantAnimation,
+    pyqtSignal, QVariantAnimation, QThread,
 )
 from PyQt6.QtWidgets import QAbstractItemView
 from PyQt6.QtGui import QBrush, QColor, QCursor, QIcon, QImage, QPainter, QPixmap
+from PyQt6.QtSvg import QSvgRenderer
+from PyQt6.QtCore import QRectF
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -51,6 +53,95 @@ SHOP_RAIL_WIDTH = 38             # 收起后保留的窄轨宽度（放置展开
 PANEL_ANIM_DURATION = 220        # 折叠/展开过渡时长（毫秒），InOutCubic 缓动
 PANEL_COLLAPSE_THRESHOLD = 80   # 拖动分割条使左栏窄于该宽度，松手即自动收起
 PANEL_EXPAND_SWITCH_THRESHOLD = 120  # 折叠态拖拽时，窄轨宽超过该值才切出完整面板（先宽后显）
+
+
+class _LinkFetchWorker(QObject):
+    """链接栏抓取/填充的后台线程 Worker"""
+    done = pyqtSignal(dict)
+
+    def __init__(self, url: str):
+        super().__init__()
+        self.url = url
+
+    def run(self):
+        try:
+            from ..services import taobao_playwright
+            res = taobao_playwright.fetch_item(self.url)
+        except Exception as e:
+            res = {"error": f"抓取异常：{e}"}
+        self.done.emit(res)
+
+
+class _RotatingSvgIcon(QLabel):
+    """旋转的 SVG 加载图标：QSvgRenderer 手动渲染 + QPropertyAnimation 驱动旋转。
+    SVG 只解析一次，每帧只是旋转变换+重绘，性能开销极小。"""
+    def __init__(self, svg_path: str, size: int = 64, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._renderer = QSvgRenderer(svg_path)
+        self._angle = 0
+        if self._renderer.isValid():
+            self._anim = QPropertyAnimation(self, b"angle", self)
+            self._anim.setDuration(1200)
+            self._anim.setStartValue(0)
+            self._anim.setEndValue(360)
+            self._anim.setLoopCount(-1)
+            self._anim.setEasingCurve(QEasingCurve.Type.Linear)
+            self._anim.start()
+        else:
+            self.setText("⏳")
+            self.setStyleSheet("font-size: 48px;")
+
+    @pyqtProperty(int)
+    def angle(self):
+        return self._angle
+
+    @angle.setter
+    def angle(self, value):
+        self._angle = value
+        self.update()
+
+    def paintEvent(self, event):
+        if not getattr(self, '_renderer', None) or not self._renderer.isValid():
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.translate(self.width() / 2, self.height() / 2)
+        painter.rotate(self._angle)
+        painter.translate(-self.width() / 2, -self.height() / 2)
+        self._renderer.render(painter, QRectF(0, 0, self.width(), self.height()))
+        painter.end()
+
+
+class _LoadingOverlay(QWidget):
+    """全局加载动画覆盖层：旋转 SVG + 状态文字"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setStyleSheet("background: rgba(255,255,255,0.88);")
+        self.hide()
+
+        lay = QVBoxLayout(self)
+        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.setSpacing(12)
+
+        self.icon = _RotatingSvgIcon(str(config.ASSETS_DIR / "loading.svg"), 64)
+        lay.addWidget(self.icon, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.text = QLabel("加载中...")
+        self.text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.text.setStyleSheet("color: #606266; font-size: 14px;")
+        lay.addWidget(self.text)
+
+    def show_with_text(self, text: str):
+        self.text.setText(text)
+        self.show()
+        self.raise_()
+
+    def hide_overlay(self):
+        self.hide()
 
 
 class SplitterWidthAnimator(QObject):
@@ -304,6 +395,15 @@ class MainWindow(QMainWindow):
         # 拖拽过程中实时监听宽度：折叠态拖过阈值才切出完整面板（先宽后显，与收起相反）
         self.splitter.splitterMoved.connect(self._on_splitter_dragging)
 
+        # 全局加载动画覆盖层（链接栏抓取/填充时显示）
+        self._global_loading = _LoadingOverlay(self.centralWidget())
+        self._global_loading.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_global_loading'):
+            self._global_loading.setGeometry(self.centralWidget().rect())
+
     def showEvent(self, event):
         # 首帧显示时按分割器实际可用宽度精确设定左栏宽度（避免按比例缩放产生偏差）
         super().showEvent(event)
@@ -484,6 +584,7 @@ class MainWindow(QMainWindow):
         self.record_panel = right_widget
 
         self.table = RecordTable()
+        self.table.add_row_requested.connect(self.on_add_blank_record)
         self.table.image_paste_requested.connect(self.on_paste_image_requested)
         self.table.image_delete_requested.connect(self.on_delete_image_requested)
         self.table.image_copy_requested.connect(self.on_copy_image)
@@ -493,6 +594,8 @@ class MainWindow(QMainWindow):
         self.table.delete_requested.connect(self.on_delete_record)
         self.table.cell_edited.connect(self.on_cell_edited)
         self.table.selection_changed.connect(self.on_selection_changed)
+        self.table.link_fetch_requested.connect(self.on_link_fetch)
+        self.table.link_fill_requested.connect(self.on_link_fill)
         right_layout.addWidget(self.table)
 
         tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；图片格双击查看大图、Ctrl+C 复制、Del 删除、Ctrl+V 粘贴；右键更多操作")
@@ -783,6 +886,18 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(80, _apply_min_width)
         self.selection_label.setText("已选 0 条")
 
+    def on_add_blank_record(self):
+        """底部➕号按钮：直接添加一行空白记录到当前店铺"""
+        if not self.current_shop:
+            QMessageBox.information(self, "提示", "请先选择左侧店铺")
+            return
+        from ..storage import new_blank_record
+        record = new_blank_record()
+        self.repo.shops[self.current_shop].append(record)
+        self.repo.save()
+        self.refresh_table()
+        logger.info("添加空白记录到店铺: %s", self.current_shop)
+
     def on_add_record(self):
         if not self.current_shop:
             QMessageBox.information(self, "提示", "请先在左侧选择或创建一个店铺")
@@ -949,7 +1064,7 @@ class MainWindow(QMainWindow):
         record_index = self.table.rendered_index(row)
         # 粘贴不替换：多图列追加到末尾，单图列直接替换（只有一张）
         if field_name in config.MULTI_IMAGE_FIELDS:
-            self.repo.append_record_image(self.current_shop, record_index, filepath)
+            self.repo.append_record_image(self.current_shop, record_index, filepath, field_name)
         else:
             self.repo.set_record_field(self.current_shop, record_index, field_name, filepath)
         self.refresh_table()
@@ -961,7 +1076,7 @@ class MainWindow(QMainWindow):
             return
         record_index = self.table.rendered_index(row)
         if field_name in config.MULTI_IMAGE_FIELDS:
-            self.repo.remove_record_image(self.current_shop, record_index, img_index)
+            self.repo.remove_record_image(self.current_shop, record_index, img_index, field_name)
         else:
             self.repo.set_record_field(self.current_shop, record_index, field_name, "")
         self.refresh_table()
@@ -1022,6 +1137,26 @@ class MainWindow(QMainWindow):
             self.refresh_table()
 
     # ==================== 淘宝登录 ====================
+    def _clear_taobao_login(self):
+        """清空淘宝登录状态：删除本地cookie + 更新按钮显示"""
+        try:
+            self.taobao.clear_cookies()
+            logger.info("已清空淘宝cookie和登录状态")
+        except Exception as e:
+            logger.warning("清空淘宝cookie失败: %s", e)
+        self.btn_taobao_login.setText("淘宝登录")
+        self.btn_taobao_login.setToolTip("")
+
+    def _refresh_login_button(self):
+        """根据当前登录状态刷新按钮显示"""
+        if self.taobao.is_logged_in():
+            count = len(self.taobao.session.cookies)
+            self.btn_taobao_login.setText("淘宝已登录 ✓")
+            self.btn_taobao_login.setToolTip(f"已登录淘宝（{count} 条 cookie）")
+        else:
+            self.btn_taobao_login.setText("淘宝登录")
+            self.btn_taobao_login.setToolTip("")
+
     def on_taobao_login(self):
         """淘宝登录按钮：已登录则显示状态并提供重新登录/退出登录，未登录则弹登录框"""
         logger.info("点击淘宝登录按钮，当前登录状态: %s", "已登录" if self.taobao.is_logged_in() else "未登录")
@@ -1059,6 +1194,163 @@ class MainWindow(QMainWindow):
         dialog.exec()
         logger.info("淘宝登录对话框已关闭")
 
+    # ==================== 链接栏右键：抓取/填充 ====================
+    def on_link_fetch(self, row: int, url: str):
+        """链接栏右键：抓取此链接，成功后提示抓取到多少张图"""
+        if not url or not url.strip():
+            QMessageBox.information(self, "提示", "该记录没有商品链接")
+            return
+        if not self.taobao.is_logged_in():
+            QMessageBox.information(self, "提示", "请先点击「淘宝登录」完成登录")
+            return
+        logger.info("链接栏抓取: row=%d, url=%s", row, url[:60])
+        self._global_loading.setGeometry(self.centralWidget().rect())
+        self._global_loading.show_with_text("正在打开 Chrome 抓取商品...\n（首次启动较慢，请稍候）")
+        self._global_loading.raise_()
+
+        self._link_fetch_thread = QThread()
+        self._link_fetch_worker = _LinkFetchWorker(url.strip())
+        self._link_fetch_worker.moveToThread(self._link_fetch_thread)
+        self._link_fetch_thread.started.connect(self._link_fetch_worker.run)
+        self._link_fetch_worker.done.connect(lambda res, r=row: self._on_link_fetch_done(res, r))
+        self._link_fetch_worker.done.connect(self._link_fetch_thread.quit)
+        self._link_fetch_thread.start()
+
+    def _on_link_fetch_done(self, res: dict, row: int):
+        """链接栏抓取完成"""
+        self._global_loading.hide_overlay()
+        if res.get("error"):
+            err = res["error"]
+            # cookie失效时自动清空登录状态
+            if "cookie" in err and ("失效" in err or "重新登录" in err):
+                self._clear_taobao_login()
+            logger.error("链接栏抓取失败: %s", err)
+            QMessageBox.warning(self, "抓取失败", err)
+            return
+        img_count = len(res.get("images", []))
+        sku_count = len(res.get("sku_images", []))
+        logger.info("链接栏抓取成功: row=%d, 标题=%s, 图片=%d张, SKU图=%d张",
+                    row, res.get("title", "")[:30], img_count, sku_count)
+        QMessageBox.information(self, "抓取成功",
+            f"商品：{res.get('title', '')[:40]}\n"
+            f"价格：{res.get('price', '')}\n"
+            f"商品主图：{img_count} 张\n"
+            f"规格图（SKU）：{sku_count} 张\n\n"
+            f"可再次右键选择「抓取并填充到此行」将数据填入此记录")
+
+    def on_link_fill(self, row: int, url: str):
+        """链接栏右键：抓取并填充到此行"""
+        if not url or not url.strip():
+            QMessageBox.information(self, "提示", "该记录没有商品链接")
+            return
+        if not self.taobao.is_logged_in():
+            QMessageBox.information(self, "提示", "请先点击「淘宝登录」完成登录")
+            return
+        if not self.current_shop:
+            QMessageBox.information(self, "提示", "请先选择店铺")
+            return
+        logger.info("链接栏填充: row=%d, url=%s", row, url[:60])
+        self._global_loading.setGeometry(self.centralWidget().rect())
+        self._global_loading.show_with_text("正在抓取并填充商品数据...\n（下载图片可能需要几秒）")
+        self._global_loading.raise_()
+
+        self._link_fill_thread = QThread()
+        self._link_fill_worker = _LinkFetchWorker(url.strip())
+        self._link_fill_worker.moveToThread(self._link_fill_thread)
+        self._link_fill_thread.started.connect(self._link_fill_worker.run)
+        self._link_fill_worker.done.connect(lambda res, r=row: self._on_link_fill_done(res, r))
+        self._link_fill_worker.done.connect(self._link_fill_thread.quit)
+        self._link_fill_thread.start()
+
+    def _on_link_fill_done(self, res: dict, row: int):
+        """链接栏填充完成：下载图片并更新当前行记录"""
+        from PyQt6.QtWidgets import QApplication as _QApp
+        try:
+            if res.get("error"):
+                err = res["error"]
+                # cookie失效时自动清空登录状态
+                if "cookie" in err and ("失效" in err or "重新登录" in err):
+                    self._clear_taobao_login()
+                self._global_loading.hide_overlay()
+                QMessageBox.warning(self, "抓取失败", err)
+                return
+
+            record_idx = self.table.rendered_index(row)
+            shop_records = self.repo.shops.get(self.current_shop, [])
+            if record_idx < 0 or record_idx >= len(shop_records):
+                self._global_loading.hide_overlay()
+                QMessageBox.warning(self, "错误", "行号无效")
+                return
+
+            record = shop_records[record_idx]
+            import requests as _req
+            import uuid as _uuid
+            config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            item_id = str(res.get("item_id", ""))
+
+            def _download(img_url: str, prefix: str = "tb") -> str:
+                if not img_url:
+                    return ""
+                try:
+                    r = _req.get(img_url, timeout=20, headers={"Referer": "https://item.taobao.com/"})
+                    if r.status_code == 200:
+                        ext = "jpg"
+                        low = img_url.lower()
+                        if ".png" in low: ext = "png"
+                        elif ".webp" in low: ext = "webp"
+                        fname = f"{prefix}_{item_id}_{_uuid.uuid4().hex[:8]}.{ext}"
+                        fpath = config.IMAGES_DIR / fname
+                        fpath.write_bytes(r.content)
+                        return str(fpath)
+                except Exception as e:
+                    logger.warning("下载图片失败 %s: %s", img_url[:60], e)
+                return ""
+
+            # 下载链接主图
+            main_img = res.get("main_image") or (res.get("images") or [None])[0]
+            link_image = _download(main_img, "tb_main")
+            _QApp.processEvents()
+
+            # 下载 SKU 图作为规格图
+            spec_images = []
+            for img_url in (res.get("sku_images") or []):
+                path = _download(img_url, "tb_sku")
+                if path:
+                    spec_images.append(path)
+                _QApp.processEvents()
+            if not spec_images and main_img:
+                spec_images = [link_image] if link_image else []
+
+            # 组装规格文本
+            spec_text = ""
+            if res.get("skus"):
+                parts = []
+                for s in res["skus"][:3]:
+                    opts = ", ".join(s.get("options", [])[:5])
+                    parts.append(f"{s.get('name','')}: {opts}")
+                spec_text = " | ".join(parts)
+
+            # 更新记录（只更新抓到的字段，保留原有的补手/评价/评价图片）
+            record["product_id"] = item_id or record.get("product_id", "")
+            record["title"] = res.get("title", "") or record.get("title", "")
+            record["spec"] = spec_text or record.get("spec", "")
+            record["link_image"] = [link_image] if link_image else record.get("link_image", [])
+            record["spec_image"] = spec_images if spec_images else record.get("spec_image", [])
+
+            self.repo.save()
+            self.refresh_table()
+            self._global_loading.hide_overlay()
+            logger.info("链接栏填充成功: row=%d, 商品ID=%s, 规格图=%d张", row, item_id, len(spec_images))
+            QMessageBox.information(self, "填充成功",
+                f"已更新此记录：\n"
+                f"标题：{res.get('title', '')[:30]}\n"
+                f"规格图：{len(spec_images)} 张\n"
+                f"链接主图：{'已更新' if link_image else '未获取'}")
+        except Exception as e:
+            self._global_loading.hide_overlay()
+            logger.exception("链接栏填充异常")
+            QMessageBox.critical(self, "错误", f"填充失败：{e}")
+
     def on_open_fetch(self):
         """打开抓取商品对话框（粘贴链接抓取标题/价格/主图）"""
         if not self.taobao.is_logged_in():
@@ -1066,7 +1358,102 @@ class MainWindow(QMainWindow):
             return
         logger.info("打开抓取商品对话框")
         dialog = TaobaoFetchDialog(self)
+        dialog.fill_requested.connect(self._on_fill_fetch_result)
         dialog.exec()
+        # 对话框关闭后刷新登录按钮状态（可能因cookie失效被清空）
+        self._refresh_login_button()
+
+    def _on_fill_fetch_result(self, res: dict):
+        """把淘宝抓取结果填充为一条新记录到当前店铺
+        spec_image = SKU图（多张），link_image = 商品主图，image_paths 留空（好评晒图用）
+        """
+        if not self.current_shop:
+            QMessageBox.information(self, "提示", "请先在左侧选择一个店铺")
+            return
+        try:
+            import requests as _req
+            import uuid as _uuid
+            from PyQt6.QtWidgets import QApplication as _QApp
+
+            config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            item_id = str(res.get("item_id", ""))
+
+            def _download(img_url: str, prefix: str = "tb") -> str:
+                """下载单张图片到本地，返回本地路径；失败返回空串"""
+                if not img_url:
+                    return ""
+                try:
+                    r = _req.get(img_url, timeout=20, headers={"Referer": "https://item.taobao.com/"})
+                    if r.status_code == 200:
+                        ext = "jpg"
+                        low = img_url.lower()
+                        if ".png" in low: ext = "png"
+                        elif ".webp" in low: ext = "webp"
+                        fname = f"{prefix}_{item_id}_{_uuid.uuid4().hex[:8]}.{ext}"
+                        fpath = config.IMAGES_DIR / fname
+                        fpath.write_bytes(r.content)
+                        return str(fpath)
+                except Exception as e:
+                    logger.warning("下载图片失败 %s: %s", img_url[:60], e)
+                return ""
+
+            # 1. 下载链接主图（第一张商品主图）
+            main_img = res.get("main_image") or (res.get("images") or [None])[0]
+            link_image = _download(main_img, "tb_main")
+            _QApp.processEvents()
+
+            # 2. 下载 SKU 图作为规格图（多张，全部下载）
+            spec_images = []
+            sku_imgs = res.get("sku_images") or []
+            logger.info("开始下载 %d 张 SKU 图作为规格图", len(sku_imgs))
+            for i, img_url in enumerate(sku_imgs):
+                path = _download(img_url, "tb_sku")
+                if path:
+                    spec_images.append(path)
+                # 每下载一张就让界面响应一次，避免卡死
+                _QApp.processEvents()
+
+            # 如果没有 SKU 图，用商品主图作为规格图
+            if not spec_images and main_img:
+                spec_images = [link_image] if link_image else []
+
+            logger.info("SKU 图下载完成，共 %d 张", len(spec_images))
+
+            # 3. 组装规格文本
+            spec_text = ""
+            if res.get("skus"):
+                parts = []
+                for s in res["skus"][:3]:
+                    opts = ", ".join(s.get("options", [])[:5])
+                    parts.append(f"{s.get('name','')}: {opts}")
+                spec_text = " | ".join(parts)
+
+            # 4. 构建记录（只填抓到的字段，image_paths 留空给好评晒图用）
+            record = {
+                "product_id": item_id,
+                "spec_image": spec_images,       # 规格图 = SKU图（多张）
+                "spec": spec_text,
+                "title": res.get("title", ""),
+                "link_image": link_image,         # 链接主图 = 商品主图
+                "helper": "",
+                "review": "",
+                "image_paths": [],                 # 评价图片留空（用户自己贴好评晒图）
+                "product_url": res.get("url", ""),
+            }
+
+            self.repo.add_record(self.current_shop, record)
+            self.refresh_table()
+            self.refresh_shop_tree()
+            self.save_data()
+            logger.info("已填充抓取结果到店铺[%s]，商品ID=%s，规格图%d张",
+                        self.current_shop, item_id, len(spec_images))
+            QMessageBox.information(self, "成功",
+                f"已添加到店铺「{self.current_shop}」\n"
+                f"标题：{res.get('title','')[:30]}\n"
+                f"规格图：{len(spec_images)} 张")
+        except Exception as e:
+            logger.exception("填充抓取结果失败")
+            QMessageBox.critical(self, "错误", f"填充失败：{e}")
 
     def _on_taobao_cookies_received(self, cookies: list):
         """登录成功：保存 cookie 并更新按钮状态（不立即用 requests 验证，避免触发风控）"""

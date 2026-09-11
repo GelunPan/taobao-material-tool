@@ -102,15 +102,35 @@ class ShopRepository:
         """更新某条记录的单个字段"""
         self.shops[shop_name][index][field_name] = value
 
-    def append_record_image(self, shop_name: str, index: int, filepath: str) -> None:
-        """向某条记录的评价图片列表追加一张图片"""
+    def append_record_image(self, shop_name: str, index: int, filepath: str, field_name: str = "image_paths") -> None:
+        """向某条记录的指定多图字段追加一张图片（默认评价图片 image_paths）"""
         record = self.shops[shop_name][index]
-        record.setdefault("image_paths", [])
-        record["image_paths"].append(filepath)
+        record.setdefault(field_name, [])
+        # 兼容旧数据：如果该字段是字符串，转成列表
+        if not isinstance(record[field_name], list):
+            record[field_name] = [record[field_name]] if record[field_name] else []
+        record[field_name].append(filepath)
 
-    def remove_record_image(self, shop_name: str, index: int, img_index: int) -> None:
-        """移除某条记录评价图片列表中指定序号的一张（仅移除引用，不删除磁盘文件）"""
+    def remove_record_image(self, shop_name: str, index: int, img_index: int, field_name: str = "image_paths") -> None:
+        """移除某条记录指定多图字段中指定序号的一张（仅移除引用，不删除磁盘文件）"""
         record = self.shops[shop_name][index]
-        images = record.setdefault("image_paths", [])
+        images = record.setdefault(field_name, [])
+        if not isinstance(images, list):
+            images = [images] if images else []
+            record[field_name] = images
         if 0 <= img_index < len(images):
             images.pop(img_index)
+
+
+def new_blank_record() -> dict:
+    """创建一条空白记录（所有字段为空，多图字段为空列表）"""
+    from . import config
+    record = {}
+    for field in config.RECORD_FIELDS:
+        if field in config.MULTI_IMAGE_FIELDS:
+            record[field] = []
+        elif field in config.SINGLE_IMAGE_FIELDS:
+            record[field] = ""
+        else:
+            record[field] = ""
+    return record

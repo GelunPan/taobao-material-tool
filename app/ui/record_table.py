@@ -222,6 +222,11 @@ class MultiImageCell(TableCell):
         # 子控件数量变化后重算行高，并对新出现的缩略图继续懒加载
         self._table.after_cell_rebuilt()
 
+    def mousePressEvent(self, event) -> None:
+        """点击单元格任意位置时，手动选中所在单元格，保证随后的 Ctrl+V/C/Del 能正确定位"""
+        super().mousePressEvent(event)
+        self._table.setCurrentCell(self._row, self._col)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         # 按单元格实际物理宽度重新换行并固定流式区高度
@@ -263,6 +268,11 @@ class RecordTable(QTableWidget):
     selection_changed = pyqtSignal(int)
     # 文本格就地编辑完成（渲染行、字段名、新文本）
     cell_edited = pyqtSignal(int, str, str)
+    # 链接栏右键：抓取此链接 / 填充抓取结果（行号、链接URL）
+    link_fetch_requested = pyqtSignal(int, str)
+    link_fill_requested = pyqtSignal(int, str)
+    # 点击底部➕号按钮：请求添加一行空白记录
+    add_row_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -290,8 +300,37 @@ class RecordTable(QTableWidget):
         self._col_distribute_timer.timeout.connect(self._distribute_stretch_columns)
 
         self._init_table()
-        # 滚动时增量加载新进入可见区的图片
+        # ➕号按钮：紧跟最后一条记录后面，点击添加一行空白记录
+        # 作为表格(self)子部件，避免viewport重建导致野指针
+        self._add_btn = QPushButton("+", self)
+        self._add_btn.setObjectName("addRowBtn")
+        self._add_btn.setFixedSize(34, 34)
+        self._add_btn.setToolTip("添加一行空白记录")
+        self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._add_btn.setStyleSheet("""
+            QPushButton#addRowBtn {
+                border-radius: 17px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #5BA8FF, stop:1 #389BFF);
+                color: white;
+                font-size: 22px;
+                font-weight: bold;
+                border: none;
+            }
+            QPushButton#addRowBtn:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #6BB5FF, stop:1 #48A8FF);
+            }
+            QPushButton#addRowBtn:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2E8AE6, stop:1 #1E7AD6);
+            }
+        """)
+        self._add_btn.clicked.connect(self._on_add_btn_clicked)
+        self._add_btn.hide()
+        # 滚动时增量加载新进入可见区的图片 + 更新➕号位置
         self.verticalScrollBar().valueChanged.connect(self._schedule_load_visible)
+        self.verticalScrollBar().valueChanged.connect(self._update_add_btn_position)
 
     def _init_table(self):
         # 第 0 列：勾选列；其后为数据列（商品ID 标题前留空，放置模式开关复选框）
@@ -446,6 +485,47 @@ class RecordTable(QTableWidget):
         """窗口宽度变化时，弹性列同步缩小/放大（普通列宽度保持不变）"""
         super().resizeEvent(event)
         self._distribute_stretch_columns()
+        self._update_add_btn_position()
+
+    def _update_add_btn_position(self):
+        """更新➕号按钮位置：紧跟最后一条记录后面居中"""
+        if not hasattr(self, '_add_btn'):
+            return
+        row_count = self.rowCount()
+        if row_count == 0:
+            self._add_btn.hide()
+            return
+        last_row = row_count - 1
+        # rowViewportPosition 返回相对于 viewport 的坐标，加上表头高度就是表格中的坐标
+        header_h = self.horizontalHeader().height()
+        row_y = self.rowViewportPosition(last_row)
+        row_h = self.rowHeight(last_row)
+        # 按钮在表格(self)中的 y 坐标 = viewport中的位置 + 表头高度 + 行高 + 间距
+        btn_y = row_y + header_h + row_h + 8
+        btn_x = (self.width() - self._add_btn.width()) // 2
+        # 如果按钮位置超出表格底部，说明最后一行不在可视区，隐藏按钮
+        visible_bottom = self.height() - self.horizontalScrollBar().height() - 4
+        if btn_y > visible_bottom - self._add_btn.height():
+            self._add_btn.hide()
+            return
+        self._add_btn.move(btn_x, btn_y)
+        self._add_btn.show()
+        self._add_btn.raise_()
+
+    def _on_add_btn_clicked(self):
+        """点击➕号：异步发出信号，避免在点击事件中刷新表格导致崩溃"""
+        # 用 QTimer 异步发出信号，等按钮点击事件处理完再刷新表格
+        QTimer.singleShot(0, self.add_row_requested.emit)
+        # 延迟滚动到最后一行，等表格刷新完成
+        QTimer.singleShot(100, self._scroll_to_last_row)
+
+    def _scroll_to_last_row(self):
+        """滚动到最后一行，确保➕号按钮可见"""
+        if self.rowCount() > 0:
+            # 用 model index 滚动，避免 item 为 None 导致崩溃
+            idx = self.model().index(self.rowCount() - 1, 1)
+            self.scrollTo(idx)
+            self._update_add_btn_position()
 
     def reset_column_layout(self) -> None:
         """清除用户手动列宽记忆并重新自适应（供外部“恢复默认列宽”使用）"""
@@ -574,6 +654,7 @@ class RecordTable(QTableWidget):
 
         self._reset_header_check()
         self._position_header_check()
+        QTimer.singleShot(0, self._update_add_btn_position)
         # 列宽在本轮事件处理后才稳定：先自适应列宽，再按最终列宽重算行高
         QTimer.singleShot(0, self._auto_fit_columns)
         QTimer.singleShot(0, self._adjust_row_heights)
@@ -755,6 +836,8 @@ class RecordTable(QTableWidget):
         view_paths = [valid[0]]
         thumb = self.make_thumb(thumb_size, view_paths, 0)
         self.bind_image_menu(thumb, row, col, field_name, view_paths, 0, 0, multi=False)
+        # 点击缩略图时选中所在单元格，保证 Ctrl+V/C/Del 能正确定位
+        thumb.mousePressEvent = lambda event, r=row, c=col: self.setCurrentCell(r, c)
         lay.addWidget(thumb, alignment=Qt.AlignmentFlag.AlignCenter)
         self.enqueue_image_job(row, col, thumb, thumb_size, valid[0])
         self.setCellWidget(row, col, container)
@@ -889,6 +972,8 @@ class RecordTable(QTableWidget):
                 self.setRowHeight(row, height)
 
     # ---------- 图片懒加载 ----------
+        self._update_add_btn_position()
+
     def _schedule_load_visible(self, *args) -> None:
         """有未加载的图片且定时器空闲时，启动分片加载"""
         if self._image_jobs and not self._load_timer.isActive():
@@ -1007,6 +1092,18 @@ class RecordTable(QTableWidget):
         self.clearSelection()
         self.setCurrentCell(row, col)
         menu = QMenu(self)
+
+        # 链接列（product_url）额外增加抓取和填充选项
+        field_name = RECORD_FIELDS[col - 1] if 0 < col <= len(RECORD_FIELDS) else ""
+        if field_name == "product_url":
+            # 直接从表格单元格获取链接文本
+            link_item = self.item(row, col)
+            link_url = link_item.text() if link_item else ""
+            menu.addSeparator()
+            act_fetch = menu.addAction("🔍 抓取此链接")
+            act_fill = menu.addAction("📥 抓取并填充到此行")
+            menu.addSeparator()
+
         act_edit = menu.addAction("修改记录")
         act_copy = menu.addAction("复制记录")
         menu.addSeparator()
@@ -1018,6 +1115,10 @@ class RecordTable(QTableWidget):
             self.record_copy_requested.emit(row)
         elif chosen == act_delete:
             self.delete_requested.emit(row)
+        elif field_name == "product_url" and chosen == act_fetch:
+            self.link_fetch_requested.emit(row, link_url)
+        elif field_name == "product_url" and chosen == act_fill:
+            self.link_fill_requested.emit(row, link_url)
 
     # ---------- 查看大图（支持多张翻页） ----------
     def show_image_gallery(self, paths: list, index: int = 0) -> None:

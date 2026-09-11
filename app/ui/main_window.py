@@ -41,6 +41,7 @@ from ..utils.logger import get_logger
 from .add_dialog import AddRecordDialog
 from .record_table import RecordTable
 from .taobao_login_dialog import TaobaoLoginDialog
+from .taobao_fetch_dialog import TaobaoFetchDialog
 
 logger = get_logger("taobao.ui")
 
@@ -516,6 +517,9 @@ class MainWindow(QMainWindow):
         self.btn_taobao_login = QPushButton("淘宝登录")
         self.btn_taobao_login.setToolTip("登录淘宝获取 cookie，用于后续导入商品素材")
         bottom_layout.addWidget(self.btn_taobao_login)
+        self.btn_taobao_fetch = QPushButton("抓取商品")
+        self.btn_taobao_fetch.setToolTip("粘贴淘宝商品链接，自动抓取标题/价格/主图")
+        bottom_layout.addWidget(self.btn_taobao_fetch)
         bottom_layout.addWidget(self.btn_add)
         bottom_layout.addWidget(self.btn_edit)
         bottom_layout.addWidget(self.btn_copy)
@@ -533,6 +537,7 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(bottom_layout)
 
         self.btn_taobao_login.clicked.connect(self.on_taobao_login)
+        self.btn_taobao_fetch.clicked.connect(self.on_open_fetch)
         self.btn_add.clicked.connect(self.on_add_record)
         # clicked 信号自带 bool(checked)，用 lambda 隔离，避免 False 被当作行号传入
         self.btn_edit.clicked.connect(lambda _checked=False: self.on_edit_record())
@@ -1053,6 +1058,15 @@ class MainWindow(QMainWindow):
         dialog.cookies_received.connect(self._on_taobao_cookies_received)
         dialog.exec()
         logger.info("淘宝登录对话框已关闭")
+
+    def on_open_fetch(self):
+        """打开抓取商品对话框（粘贴链接抓取标题/价格/主图）"""
+        if not self.taobao.is_logged_in():
+            QMessageBox.information(self, "提示", "请先点击「淘宝登录」完成登录")
+            return
+        logger.info("打开抓取商品对话框")
+        dialog = TaobaoFetchDialog(self)
+        dialog.exec()
 
     def _on_taobao_cookies_received(self, cookies: list):
         """登录成功：保存 cookie 并更新按钮状态（不立即用 requests 验证，避免触发风控）"""

@@ -122,20 +122,31 @@ def run_login(cookie_file: Path, on_status=None) -> tuple[bool, str]:
         return False, f"登录流程异常：{e}"
 
 
-def fetch_item(item_id: str, cookie_file: Path, save_dir: Path = None,
-               wait_ms: int = 6000) -> dict:
-    """复用持久化 Chrome，打开商品页提取标题和图片。
+def _extract_item_id(url: str) -> str:
+    """从商品链接里提取 item id，支持 https://item.taobao.com/item.htm?id=xxx 或裸 id"""
+    import re
+    m = re.search(r"[?&]id=(\d+)", url)
+    if m:
+        return m.group(1)
+    m = re.search(r"(\d{6,})", url)
+    return m.group(1) if m else url.strip()
 
-    阻塞调用，应放工作线程。
+
+def fetch_item(url: str, cookie_file: Path = None, save_dir: Path = None,
+               wait_ms: int = 6000, headless: bool = True) -> dict:
+    """复用持久化 Chrome，打开商品页提取标题、价格、图片。
+
+    url: 商品完整链接或纯 item id。阻塞调用，应放工作线程。
     """
-    result = {"item_id": item_id, "title": None, "main_image": None,
-              "images": [], "saved_files": [], "error": None}
+    item_id = _extract_item_id(url)
+    result = {"item_id": item_id, "title": None, "price": None,
+              "main_image": None, "images": [], "saved_files": [], "error": None}
     try:
         with sync_playwright() as p:
             ctx = p.chromium.launch_persistent_context(
                 PROFILE_DIR,
                 channel="chrome",
-                headless=True,
+                headless=headless,
                 viewport={"width": 1280, "height": 900},
                 args=["--disable-blink-features=AutomationControlled"],
             )
@@ -144,9 +155,9 @@ def fetch_item(item_id: str, cookie_file: Path, save_dir: Path = None,
             logger.info("抓商品：先访问首页暖身")
             page.goto(HOME_URL, wait_until="domcontentloaded", timeout=40000)
             time.sleep(2.5)
-            url = f"https://item.taobao.com/item.htm?id={item_id}"
-            logger.info("进入商品页: %s", url)
-            page.goto(url, wait_until="domcontentloaded", timeout=40000)
+            item_url = f"https://item.taobao.com/item.htm?id={item_id}"
+            logger.info("进入商品页: %s", item_url)
+            page.goto(item_url, wait_until="domcontentloaded", timeout=40000)
             page.wait_for_timeout(wait_ms)
 
             cur = page.url
@@ -155,23 +166,25 @@ def fetch_item(item_id: str, cookie_file: Path, save_dir: Path = None,
                 ctx.close()
                 return result
 
-            title = page.evaluate("""() => {
+            info = page.evaluate("""() => {
+                const text = document.body ? document.body.innerText : '';
+                const block = text.indexOf('访问被拒绝') > -1 || text.indexOf('拒绝访问') > -1 || text.indexOf('亲，访问') > -1;
                 const cands = [
                     document.querySelector('h1')?.textContent,
                     document.querySelector('[class*="mainTitle"]')?.textContent,
+                    document.querySelector('[class*="ItemTitle"]')?.textContent,
                     document.title
                 ];
-                const t = cands.find(x => x && x.trim().length > 5);
-                return t ? t.trim() : document.title;
-            }""")
-            result["title"] = title
-            if title and any(k in title for k in ["访问被拒绝", "拒绝访问", "亲，访问", "风控"]):
-                result["error"] = f"触发风控：{title}"
-                result["title"] = None
-                ctx.close()
-                return result
-
-            images = page.evaluate("""() => {
+                const title = (cands.find(x => x && x.trim().length > 5) || document.title || '').trim();
+                // 价格
+                let price = '';
+                const pEl = document.querySelector('[class*="price"] [class*="text"], [class*="Price"]');
+                if (pEl) price = pEl.textContent.trim();
+                if (!price) {
+                    const m = text.match(/¥\\s*([0-9]+(?:\\.[0-9]+)?)/);
+                    if (m) price = '¥' + m[1];
+                }
+                // 图片
                 const urls = [];
                 document.querySelectorAll('img').forEach(img => {
                     let u = img.src || img.getAttribute('data-src') || '';
@@ -180,12 +193,33 @@ def fetch_item(item_id: str, cookie_file: Path, save_dir: Path = None,
                         if (urls.indexOf(u) === -1) urls.push(u);
                     }
                 });
-                return urls;
-            }""") or []
+                return {title, price, block, urls};
+            }""")
+            if info.get("block"):
+                result["error"] = "页面返回风控拦截（访问被拒绝）"
+                ctx.close()
+                return result
+            result["title"] = info.get("title")
+            result["price"] = info.get("price")
+            images = info.get("urls") or []
             result["images"] = [u for u in images if "tps-48-48" not in u and "tps-24-" not in u]
             if result["images"]:
                 result["main_image"] = result["images"][0]
-            logger.info("抓到标题=%s, 图片=%d", title, len(result["images"]))
+            logger.info("抓到标题=%s, 价格=%s, 图片=%d", result["title"], result["price"], len(result["images"]))
+
+            # 可选下载图片
+            if save_dir and result["images"]:
+                save_dir = Path(save_dir)
+                save_dir.mkdir(parents=True, exist_ok=True)
+                for i, img_url in enumerate(result["images"][:5]):
+                    try:
+                        ext = "png" if ".png" in img_url else ("webp" if ".webp" in img_url else "jpg")
+                        fp = save_dir / f"{item_id}_{i+1}.{ext}"
+                        resp = ctx.request.get(img_url, headers={"Referer": "https://item.taobao.com/"})
+                        fp.write_bytes(resp.body())
+                        result["saved_files"].append(str(fp))
+                    except Exception as e:
+                        logger.warning("下载图失败 %s: %s", img_url[:60], e)
             ctx.close()
     except Exception as e:
         logger.exception("抓商品异常")

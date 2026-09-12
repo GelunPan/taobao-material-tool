@@ -53,6 +53,14 @@ QPushButton:pressed {
     background-color: #ECF5FF;
 }
 
+/* 带下拉菜单的按钮（如「导出」）：箭头由按钮文字里的 ▾ 表示。
+   这里关掉 Qt 默认的 menu-indicator——自定义 QSS 下它常与新样式打架，
+   出现双箭头或错位 */
+QPushButton::menu-indicator {
+    image: none;
+    width: 0px;
+}
+
 QPushButton[primary="true"] {
     background-color: #409EFF;
     border: none;
@@ -65,6 +73,23 @@ QPushButton[primary="true"]:hover {
 
 QPushButton[primary="true"]:pressed {
     background-color: #337ECC;
+}
+
+/* 危险操作按钮（如「清空历史」）：红字红边，与普通按钮区分开 */
+#dangerBtn {
+    color: #E74C3C;
+    border-color: #F5C6C0;
+}
+
+#dangerBtn:hover {
+    color: #FFFFFF;
+    background-color: #E74C3C;
+    border-color: #E74C3C;
+}
+
+#dangerBtn:pressed {
+    background-color: #C0392B;
+    border-color: #C0392B;
 }
 
 /* ===== 输入框 ===== */
@@ -148,13 +173,14 @@ QCheckBox::indicator:indeterminate {
 }
 
 /* ===== 树 ===== */
+/* 注：缩进(branch 区域宽度)由代码 ShopTree.setIndentation() 设定，见 main_window.py。
+   QSS 不支持 indentation 属性，写在这里会触发 "Unknown property" 告警，故不在此设置 */
 QTreeWidget {
     background-color: #FFFFFF;
     border: 1px solid #E4E7ED;
     border-radius: 8px;
     padding: 6px 4px;
     outline: none;
-    indentation: 18px;
 }
 
 QTreeWidget::item {
@@ -268,11 +294,22 @@ QSplitter::handle {
 }
 
 QSplitter::handle:hover {
-    background-color: #A0CFFF;
+    background-color: transparent;
 }
 
+/* 用 6px 宽的把手，中间画一条 1px 分隔线，把左右两栏「连」成一条缝，
+   消除原来透明把手造成的空洞观感；悬停时线条变蓝，拖动反馈更直接 */
 QSplitter::handle:horizontal {
     width: 6px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 transparent, stop:0.46 transparent,
+        stop:0.5 #DCDFE6, stop:0.54 transparent, stop:1 transparent);
+}
+
+QSplitter::handle:horizontal:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 transparent, stop:0.46 transparent,
+        stop:0.5 #A0CFFF, stop:0.54 transparent, stop:1 transparent);
 }
 
 QSplitter::handle:vertical {

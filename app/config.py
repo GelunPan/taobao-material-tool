@@ -10,6 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 IMAGES_DIR = DATA_DIR / "images"
 DATA_FILE = DATA_DIR / "data.json"
+SCREENSHOTS_DIR = DATA_DIR / "screenshots"   # 表单截图历史目录（一键截图 + 历史查看共用）
 ASSETS_DIR = BASE_DIR / "app" / "assets"   # 界面图标素材（复选框三态等）
 
 # ---------- 应用 ----------
@@ -79,8 +80,34 @@ DIALOG_MULTI_SIZE = 72        # 弹窗多图缩略图边长
 FULL_IMAGE_MAX_SIZE = 800     # 查看大图最大边长
 IMAGE_EXT = "PNG"             # 粘贴/导入图片保存格式
 
+# 需要**居中**显示的文本列（其余文本列统一左对齐）
+# 约束：只放字段名，表格渲染、Excel 导出共用同一份定义，避免两处各写一遍而走样
+TABLE_CENTER_FIELDS = {"product_id"}
+
 # ---------- Excel 导出 ----------
-EXPORT_COLUMN_WIDTHS = [15, 30, 20, 40, 30, 15, 50, 30, 50]
+# 业务字段 -> 导出列宽（字符数，约 7px/字符）与对齐，全部由字段类型推导，不写死索引
+EXPORT_TEXT_COL_WIDTH = 26      # 普通文本列宽度
+EXPORT_TEXT_WIDTH_OVERRIDES = {  # 个别文本列自定义宽度（内容短，不用给足）
+    "product_id": 18,
+    "helper": 12,
+    "spec": 22,
+}
+# 商品链接列：单元格里写**完整链接**（方便直接复制粘贴去用），只是列宽收窄——
+# 看的人不需要一眼看全链接长什么样，点一下在编辑栏里照样是完整值
+EXPORT_LINK_COL_WIDTH = 16
+EXPORT_TEXT_WRAP = True         # 文本列自动换行，长标题/长评价完整展示
+EXPORT_TITLE_HEIGHT = 30        # 顶部店铺名标题行高（磅）
+EXPORT_HEADER_HEIGHT = 22       # 表头行高（磅）
+EXPORT_FREEZE_ROW = 3           # 冻结前两行（店铺名 + 表头），滚动时表头常驻
+
+# ---------- Excel 内嵌图片 ----------
+# 嵌入的是**原图文件本身**（不重编码、不生成缩略图），只约束它的显示尺寸
+EXPORT_IMAGE_MAX_COUNT = 6      # 每格最多并排几张：再多整列会被撑爆
+EXPORT_PX_PER_CHAR = 7          # Excel 列宽单位换算：1 字符 ≈ 7px
+EXPORT_PX_TO_PT = 0.75          # Excel 行高单位换算：1px = 0.75pt
+EXPORT_IMAGE_MAX_HEIGHT_PX = 533   # 单张图显示高度上限（Excel 行高上限 409.5pt ≈ 546px）
+EXPORT_IMAGE_MAX_WIDTH_PX = 1785   # 图片列总宽上限（Excel 列宽上限 255 字符 ≈ 1785px）
+EXPORT_IMAGE_EMPTY_COL_WIDTH = 10  # 该列一条图都没有时的窄列宽
 
 # ---------- 淘宝导入 ----------
 TAOBAO_COOKIE_FILE = DATA_DIR / "taobao_cookie.json"   # 淘宝登录 cookie 持久化文件

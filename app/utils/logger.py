@@ -9,6 +9,7 @@
 """
 import logging
 import sys
+import time
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
@@ -24,6 +25,25 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # 已初始化的 logger 缓存
 _loggers: dict[str, logging.Logger] = {}
+
+
+class _SafeTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """跨天滚动失败时不刷屏、也不丢日志的按天分割处理器。
+
+    Windows 上日志文件常被编辑器 / 杀毒 / 索引器占用，`os.rename` 会抛
+    PermissionError；而 logging 默认会把整段 traceback 打到 stderr，并且因为
+    `rolloverAt` 没被推进，**之后每写一条日志都会再重试一次、刷一屏报错**。
+    这里退化为「继续追加写当前文件」，并把下次滚动时间推到下一个周期：
+    最坏情况只是跨天那天没切成新文件，日志内容和其它功能都不受影响。
+    """
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except OSError:
+            if self.stream is None:
+                self.stream = self._open()
+            self.rolloverAt = self.computeRollover(int(time.time()))
 
 
 def get_logger(name: str = "app", level: int = logging.DEBUG) -> logging.Logger:
@@ -53,7 +73,7 @@ def get_logger(name: str = "app", level: int = logging.DEBUG) -> logging.Logger:
 
     # 文件输出（DEBUG 及以上，按天分割，保留 30 天）
     log_file = LOG_DIR / f"{name}.log"
-    file_handler = TimedRotatingFileHandler(
+    file_handler = _SafeTimedRotatingFileHandler(
         filename=str(log_file),
         when="midnight",       # 每天午夜分割
         interval=1,

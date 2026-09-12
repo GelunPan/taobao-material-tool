@@ -1,7 +1,9 @@
 """主窗口：组装界面面板并编排业务流程。
 
 只负责界面组织与事件响应，数据读写走 ShopRepository，图片/导出走服务层。
+数据变更统一走 `_undo_step` 包一层，Ctrl+Z 即可回退上一步。
 """
+from contextlib import contextmanager
 from copy import deepcopy
 
 from PyQt6.QtCore import (
@@ -9,7 +11,7 @@ from PyQt6.QtCore import (
     pyqtSignal, QVariantAnimation, QThread,
 )
 from PyQt6.QtWidgets import QAbstractItemView
-from PyQt6.QtGui import QBrush, QColor, QCursor, QIcon, QImage, QPainter, QPixmap
+from PyQt6.QtGui import QBrush, QColor, QCursor, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import QRectF
 from PyQt6.QtWidgets import (
@@ -36,22 +38,37 @@ from PyQt6.QtWidgets import (
 )
 
 from .. import config
-from ..services import ExcelExporter, ImageService
+from ..services import (
+    ExcelExporter,
+    ImageService,
+    ScreenshotStore,
+    taobao_import,
+    taobao_playwright,
+    taobao_session,
+)
 from ..services.taobao_client import TaobaoClient
+from ..services.history import UndoStack, snapshot
 from ..storage import DataLoadError, ShopRepository
 from ..utils.logger import get_logger
 from .add_dialog import AddRecordDialog
+from .import_worker import BatchImportWorker
 from .record_table import RecordTable
+from .screenshot_history_dialog import ScreenshotHistoryDialog
+from .table_capture import capture_records_table, record_is_empty
 from .taobao_login_dialog import TaobaoLoginDialog
 from .taobao_fetch_dialog import TaobaoFetchDialog
 
 logger = get_logger("taobao.ui")
 
 # 左侧店铺栏宽度与折叠动画参数
-SHOP_PANEL_DEFAULT_WIDTH = 250   # 展开时的默认宽度（也是首次展开的目标宽度）
+SHOP_PANEL_MAX_WIDTH = 330       # 店铺列表能拉到的最大宽度（再宽也没必要）
+SHOP_PANEL_DEFAULT_WIDTH = 200   # 展开时的默认宽度（也是首次展开的目标宽度）
+SHOP_PANEL_MIN_WIDTH = 73        # 拖动下限 ≈ 原上限 220 的 1/3，避免被拉没
 SHOP_RAIL_WIDTH = 38             # 收起后保留的窄轨宽度（放置展开按钮）
 PANEL_ANIM_DURATION = 220        # 折叠/展开过渡时长（毫秒），InOutCubic 缓动
-PANEL_COLLAPSE_THRESHOLD = 80   # 拖动分割条使左栏窄于该宽度，松手即自动收起
+PANEL_COLLAPSE_THRESHOLD = 50   # 拖动松手时左栏窄于该宽度才自动收起；
+                                  # 须小于 SHOP_PANEL_MIN_WIDTH(73)，否则拖到下限会被误收起，
+                                  # 与「下限防止完全缩小」冲突；完整收起仍走「收起」按钮
 PANEL_EXPAND_SWITCH_THRESHOLD = 120  # 折叠态拖拽时，窄轨宽超过该值才切出完整面板（先宽后显）
 
 
@@ -140,6 +157,10 @@ class _LoadingOverlay(QWidget):
         self.show()
         self.raise_()
 
+    def update_text(self, text: str):
+        """展示期间更新状态文字（如批量导入进度），不改变可见状态"""
+        self.text.setText(text)
+
     def hide_overlay(self):
         self.hide()
 
@@ -183,7 +204,7 @@ class SortableShopTree(QTreeWidget):
     - 子项（素材数量）同时去掉 Drag 和 Drop，完全不可参与拖拽
     """
     shop_order_changed = pyqtSignal(list)  # 新的店铺名顺序（list[str]）
-    BRANCH_ARROW_SIZE = 13  # 箭头绘制尺寸（px），和 18px indentation 搭配不拥挤
+    BRANCH_ARROW_SIZE = 13  # 箭头绘制尺寸（px），与下方 setIndentation 的缩进宽度搭配不拥挤
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -347,7 +368,9 @@ class MainWindow(QMainWindow):
         # 数据层
         self.repo = ShopRepository(config.DATA_FILE, config.IMAGES_DIR)
         self.taobao = TaobaoClient(config.TAOBAO_COOKIE_FILE)
+        self._undo = UndoStack()      # Ctrl+Z：数据快照式撤销栈
         self.current_shop = None
+        self.current_category = None   # 当前选中的产品分类（表格/导出/新增都只针对它）
         self._all_expanded = True  # 店铺树整体展开状态
         # 左侧栏折叠状态与展开宽度记忆
         self._shop_collapsed = False
@@ -355,10 +378,21 @@ class MainWindow(QMainWindow):
         self._panel_sized = False  # 首帧显示后再精确设定初始栏宽
         self._user_dragging = False  # 用户是否正在拖动分割条
         self._panel_switched_during_drag = False  # 本次拖拽中是否已从窄轨切到完整面板
-        self._shop_label_colors = {}  # 店铺名 -> 背景色（按店铺持久化记忆）
+        # 一键导入后台线程（运行中禁止重复触发）
+        self._batch_import_thread = None
+        self._batch_import_worker = None
 
         self.init_ui()
         self.load_data()
+
+    @property
+    def _shop_label_colors(self) -> dict:
+        """店铺名 -> {"bg": hex|None, "text": hex|None}。
+
+        直接指向仓库里的 dict（随 data.json 持久化），不另存一份内存副本——
+        店铺名的填充色/字体色要跨重启保留，导出图才能和界面上看到的一致。
+        """
+        return self.repo.shop_colors
 
     # ==================== 界面搭建 ====================
     def init_ui(self):
@@ -382,6 +416,9 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.shop_stack)
         self.splitter.addWidget(self._build_record_panel())
         self.splitter.setSizes([SHOP_PANEL_DEFAULT_WIDTH, 1150])
+        # 上下限挂在分割器子项（shop_stack）上：分割槽永远被夹在 [73, 330] 内，
+        # 「缝」在任何拖拽/窗口缩放下都不可能被扯开（挂在内页上会被绕过）
+        self._limit_shop_stack(SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH)
 
         # 折叠/展开过渡动画（InOutCubic 起止柔和、中间流畅）
         self._panel_animator = SplitterWidthAnimator(self.splitter, 0, self)
@@ -415,11 +452,11 @@ class MainWindow(QMainWindow):
             )
 
     def _build_shop_panel(self):
-        """左侧：店铺列表面板"""
+        """左侧：店铺列表面板（店铺 -> 产品分类 -> 素材）"""
         left_widget = QWidget()
         left_widget.setObjectName("panel")
-        # 显式放开最小宽度，QSplitter 动画才能把它收到窄轨宽度
-        left_widget.setMinimumWidth(0)
+        # 宽度上下限不在这里设：QSplitter 的直接子项是 shop_stack，约束必须挂在它身上，
+        # 挂在内页上分割槽仍能被拖出上限 → 内页卡在 max 不动，「缝」就被扯开（v0.5 修复）
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(8)
@@ -450,19 +487,8 @@ class MainWindow(QMainWindow):
         self.shop_tree.shop_order_changed.connect(self.on_shop_order_changed)
         left_layout.addWidget(self.shop_tree)
 
-        shop_btn_layout = QHBoxLayout()
-        self.btn_add_shop = QPushButton("+ 新店铺")
-        self.btn_rename_shop = QPushButton("重命名")
-        self.btn_delete_shop = QPushButton("删除店铺")
-        shop_btn_layout.addWidget(self.btn_add_shop)
-        shop_btn_layout.addWidget(self.btn_rename_shop)
-        shop_btn_layout.addWidget(self.btn_delete_shop)
-        left_layout.addLayout(shop_btn_layout)
-
-        self.btn_add_shop.clicked.connect(self.on_add_shop)
-        self.btn_rename_shop.clicked.connect(self.on_rename_shop)
-        self.btn_delete_shop.clicked.connect(self.on_delete_shop)
-
+        # 新增店铺不再放按钮：统一在店铺列表右键里操作（右键空白处 → 新增店铺），
+        # 避免底部一排按钮 + 右键菜单两套入口各写一遍
         return left_widget
 
     def _build_collapsed_rail(self):
@@ -485,6 +511,15 @@ class MainWindow(QMainWindow):
         return rail
 
     # ---------- 左侧栏折叠/展开动画 ----------
+    def _limit_shop_stack(self, min_w: int, max_w: int | None = None) -> None:
+        """设置分割器子项（shop_stack）的宽度上下限；max_w=None 表示放开上限。
+
+        展开态夹在 [SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH]，
+        收起态放开下限（窄轨 38 宽，比下限小）——切换时机见 collapse/expand/_on_splitter_dragging。
+        """
+        self.shop_stack.setMinimumWidth(min_w)
+        self.shop_stack.setMaximumWidth(max_w if max_w is not None else 16777215)
+
     def _animate_panel_width(self, target_width: int, on_finished=None) -> None:
         """把左侧栏从当前宽度平滑过渡到 target_width"""
         anim = self.panel_animation
@@ -533,15 +568,20 @@ class MainWindow(QMainWindow):
             self.shop_stack.setCurrentIndex(0)
             self._shop_collapsed = False
             self._panel_switched_during_drag = True
+            # 切回完整面板的瞬间把上下限收回分割器子项上：上限 330 让手柄到这里就停，
+            # 下限 73 防止再往回拖穿；没有这一步，拖出 330 后缝就会被扯开
+            self._limit_shop_stack(SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH)
 
     def _on_split_handle_released(self) -> None:
-        """松手判定：拖到阈值以下自动吸附收起；否则记住展开宽度"""
+        """松手判定：拖到阈值以下自动吸附收起；否则记住展开宽度（夹在上下限内）"""
         self._user_dragging = False
         width = self.splitter.sizes()[0]
         if width < PANEL_COLLAPSE_THRESHOLD:
             self.collapse_shop_panel()
         elif width > SHOP_RAIL_WIDTH + 20:
-            self._shop_expanded_width = width
+            self._shop_expanded_width = max(
+                SHOP_PANEL_MIN_WIDTH, min(width, SHOP_PANEL_MAX_WIDTH)
+            )
 
     def collapse_shop_panel(self) -> None:
         """收起左侧店铺栏：动画收窄到窄轨，结束后切换为窄轨页面"""
@@ -551,9 +591,16 @@ class MainWindow(QMainWindow):
         if current > SHOP_RAIL_WIDTH + 20:
             self._shop_expanded_width = current  # 记住用户当前宽度，展开时还原
 
+        # 先放开下限：收起动画要缩到 38（比展开下限 73 小），否则会被夹住
+        self._limit_shop_stack(0, SHOP_PANEL_MAX_WIDTH)
+
         def on_finished():
             self.shop_stack.setCurrentIndex(1)
             self._shop_collapsed = True
+            # 切到窄轨页面（min-width=0）后把左栏精确收到窄轨宽度，
+            # 否则会被店铺面板的 min-width 夹在 73，看起来没收起干净
+            available = self.splitter.width() - self.splitter.handleWidth()
+            self.splitter.setSizes([SHOP_RAIL_WIDTH, max(0, available - SHOP_RAIL_WIDTH)])
         self._animate_panel_width(SHOP_RAIL_WIDTH, on_finished)
 
     def expand_shop_panel(self) -> None:
@@ -562,7 +609,14 @@ class MainWindow(QMainWindow):
             return
         self.shop_stack.setCurrentIndex(0)
         self._shop_collapsed = False
-        self._animate_panel_width(self._shop_expanded_width)
+        # 动画期：起点是 38 的窄轨，须放开下限；上限先收紧，拖拽/动画都出不了 330
+        self._limit_shop_stack(0, SHOP_PANEL_MAX_WIDTH)
+        target = max(SHOP_PANEL_MIN_WIDTH, min(self._shop_expanded_width, SHOP_PANEL_MAX_WIDTH))
+
+        def _finish_expand():
+            # 动画结束后恢复展开态约束，缝从此焊死在 [73, 330] 区间内
+            self._limit_shop_stack(SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH)
+        self._animate_panel_width(target, _finish_expand)
 
     def _build_record_panel(self):
         """右侧：素材表格面板"""
@@ -592,25 +646,48 @@ class MainWindow(QMainWindow):
         self.table.edit_requested.connect(self.on_edit_record)
         self.table.record_copy_requested.connect(self.on_copy_record)
         self.table.delete_requested.connect(self.on_delete_record)
+        # 选区批量（Ctrl+A 全选 / 拖选一片区域 → 右键）：参数是原始记录索引列表
+        self.table.records_delete_requested.connect(self.on_delete_records)
+        self.table.records_copy_requested.connect(self.on_copy_records)
+        # Ctrl+Z：表格内由表格发出；焦点在按钮等控件上时由主窗口 keyPressEvent 兜底
+        self.table.undo_requested.connect(self.on_undo)
         self.table.cell_edited.connect(self.on_cell_edited)
         self.table.selection_changed.connect(self.on_selection_changed)
         self.table.link_fetch_requested.connect(self.on_link_fetch)
         self.table.link_fill_requested.connect(self.on_link_fill)
         right_layout.addWidget(self.table)
 
-        tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；图片格双击查看大图、Ctrl+C 复制、Del 删除、Ctrl+V 粘贴；右键更多操作")
+        tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；Ctrl+A 全选记录；右键删除/复制选中的记录；Ctrl+Z 撤销上一步；图片格双击查看大图、Ctrl+C 复制、Del 删除、Ctrl+V 粘贴；右键更多操作")
         tip_label.setObjectName("tip")
         right_layout.addWidget(tip_label)
 
         # 底部操作栏
+        # 删除不再放按钮：一律走右键（单行 / 多选区都支持），避免"手滑点一下就删"。
+        # 新增/修改/复制收敛成一个「商品」下拉菜单，底部栏不再排一排同质按钮
         bottom_layout = QHBoxLayout()
-        self.btn_add = QPushButton("新增记录")
-        self.btn_edit = QPushButton("修改记录")
-        self.btn_copy = QPushButton("复制记录")
-        self.btn_delete = QPushButton("删除记录")
-        self.btn_export = QPushButton("导出Excel")
+        self.btn_product = QPushButton("商品 ▾")
+        self.btn_product.setToolTip("新增商品 / 修改商品信息 / 复制商品信息")
+        self.product_menu = QMenu(self)
+        self.act_product_add = self.product_menu.addAction("新增商品")
+        self.act_product_edit = self.product_menu.addAction("修改商品信息")
+        self.act_product_copy = self.product_menu.addAction("复制商品信息")
+        self.btn_product.setMenu(self.product_menu)
+        # 「导出」：一个入口，三种出口（Excel 表格 / 表单整表图片 / 截图历史）
+        self.btn_export = QPushButton("导出 ▾")
+        self.btn_export.setToolTip("导出当前店铺：Excel 表格 / 表单图片 / 查看截图历史")
+        self.export_menu = QMenu(self)
+        self.act_export_excel = self.export_menu.addAction("导出 Excel 表格")
+        self.act_export_excel.setToolTip("把当前店铺全部记录导出为 .xlsx")
+        self.act_export_image = self.export_menu.addAction("导出表单图片")
+        self.act_export_image.setToolTip(
+            "把当前店铺的整张表单（含滚动区外的所有记录）渲染成图片\n"
+            "顶部带店铺名，弹出保存位置，文件名默认为「店铺名_序号」，并归档到截图历史"
+        )
+        self.act_screenshot_history = self.export_menu.addAction("截图历史")
+        self.act_screenshot_history.setToolTip("查看所有历史截图：大图预览、滚轮缩放、另存为")
+        self.btn_export.setMenu(self.export_menu)
         # 主操作按钮样式
-        self.btn_add.setProperty("primary", True)
+        self.btn_product.setProperty("primary", True)
         self.btn_export.setProperty("primary", True)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("按标题搜索...")
@@ -623,10 +700,13 @@ class MainWindow(QMainWindow):
         self.btn_taobao_fetch = QPushButton("抓取商品")
         self.btn_taobao_fetch.setToolTip("粘贴淘宝商品链接，自动抓取标题/价格/主图")
         bottom_layout.addWidget(self.btn_taobao_fetch)
-        bottom_layout.addWidget(self.btn_add)
-        bottom_layout.addWidget(self.btn_edit)
-        bottom_layout.addWidget(self.btn_copy)
-        bottom_layout.addWidget(self.btn_delete)
+        self.btn_batch_import = QPushButton("一键导入")
+        self.btn_batch_import.setToolTip(
+            "批量抓取当前店铺所有已填「商品链接」的商品信息并填入表格\n"
+            "（需先淘宝登录；已导入过的自动跳过；单条失败不影响其他条目）"
+        )
+        bottom_layout.addWidget(self.btn_batch_import)
+        bottom_layout.addWidget(self.btn_product)
         self.selection_label = QLabel("已选 0 条")
         self.selection_label.setObjectName("tip")
         self.selection_label.hide()  # 未进入批量选择模式时不显示，界面更干净
@@ -641,17 +721,32 @@ class MainWindow(QMainWindow):
 
         self.btn_taobao_login.clicked.connect(self.on_taobao_login)
         self.btn_taobao_fetch.clicked.connect(self.on_open_fetch)
-        self.btn_add.clicked.connect(self.on_add_record)
-        # clicked 信号自带 bool(checked)，用 lambda 隔离，避免 False 被当作行号传入
-        self.btn_edit.clicked.connect(lambda _checked=False: self.on_edit_record())
-        self.btn_copy.clicked.connect(lambda _checked=False: self.on_copy_record())
-        self.btn_delete.clicked.connect(lambda _checked=False: self.on_delete_record())
-        self.btn_export.clicked.connect(self.on_export)
+        self.btn_batch_import.clicked.connect(self.on_batch_import)
+        # 「商品」菜单三项：新增 / 修改 / 复制（action 用 triggered，不带 checked 布尔）
+        self.act_product_add.triggered.connect(lambda _checked=False: self.on_add_record())
+        self.act_product_edit.triggered.connect(lambda _checked=False: self.on_edit_record())
+        self.act_product_copy.triggered.connect(lambda _checked=False: self.on_copy_record())
+        self.act_export_excel.triggered.connect(lambda _checked=False: self.on_export_excel())
+        self.act_export_image.triggered.connect(lambda _checked=False: self.on_export_image())
+        self.act_screenshot_history.triggered.connect(lambda _checked=False: self.on_screenshot_history())
         self.btn_search.clicked.connect(self.on_search)
         self.btn_clear_search.clicked.connect(self.on_clear_search)
         self.search_input.returnPressed.connect(self.on_search)
 
         return right_widget
+
+    def keyPressEvent(self, event) -> None:
+        """Ctrl+Z 兜底：焦点不在表格上（例如停在某个按钮）时也能撤销。
+
+        事件只有在焦点控件**没有消费**它时才会冒泡到这里，所以：
+        - 焦点在表格 → 表格自己处理并 accept，这里不会再触发（不会一次撤销两步）
+        - 焦点在搜索框 → QLineEdit 的文本撤销先接管，也不会误回退整表
+        """
+        if event.matches(QKeySequence.StandardKey.Undo):
+            self.on_undo()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     # ==================== 数据加载与保存 ====================
     def load_data(self):
@@ -677,9 +772,9 @@ class MainWindow(QMainWindow):
         if self.repo.shop_exists(name):
             QMessageBox.warning(self, "提示", "该店铺已存在！")
             return
-        self.repo.add_shop(name)
+        with self._undo_step("添加店铺"):
+            self.repo.add_shop(name)
         self.refresh_shop_tree()
-        self.save_data()
         self.select_shop_in_tree(name)
 
     def on_rename_shop(self):
@@ -695,12 +790,71 @@ class MainWindow(QMainWindow):
         if self.repo.shop_exists(new_name):
             QMessageBox.warning(self, "提示", "该店铺名已存在！")
             return
-        self.repo.rename_shop(old_name, new_name)
-        if self.current_shop == old_name:
-            self.current_shop = new_name
-            self.current_shop_label.setText(new_name)
+        with self._undo_step("重命名店铺"):
+            self.repo.rename_shop(old_name, new_name)
+            if self.current_shop == old_name:
+                self.current_shop = new_name
+                self.current_shop_label.setText(new_name)
         self.refresh_shop_tree()
-        self.save_data()
+
+    # ==================== 产品分类 ====================
+    def _next_category_name(self, shop: str) -> str:
+        """给新分类起名：分类二 / 分类三 …（跳过已被占用的名字）"""
+        existing = set(self.repo.categories(shop))
+        index = 2
+        while f"分类{index}" in existing:
+            index += 1
+        return f"分类{index}"
+
+    def on_add_category(self, shop: str | None = None) -> None:
+        """在指定店铺下新增一个产品分类（默认起名 分类N，可改）"""
+        shop = shop or self.current_shop
+        if not shop:
+            QMessageBox.information(self, "提示", "请先选择店铺")
+            return
+        suggestion = self._next_category_name(shop)
+        name, ok = QInputDialog.getText(self, "新增产品分类", f"「{shop}」的分类名称:",
+                                        text=suggestion)
+        if not (ok and name.strip()):
+            return
+        name = name.strip()
+        if self.repo.category_exists(shop, name):
+            QMessageBox.warning(self, "提示", "该分类名已存在！")
+            return
+        with self._undo_step(f"新增分类「{name}」"):
+            self.repo.add_category(shop, name)
+        self.refresh_shop_tree()
+        self.select_shop_in_tree(shop, name)
+
+    def on_rename_category(self, shop: str, category: str) -> None:
+        new_name, ok = QInputDialog.getText(self, "重命名分类", "请输入新名称:", text=category)
+        if not (ok and new_name.strip() and new_name.strip() != category):
+            return
+        new_name = new_name.strip()
+        if self.repo.category_exists(shop, new_name):
+            QMessageBox.warning(self, "提示", "该分类名已存在！")
+            return
+        with self._undo_step(f"重命名分类「{category}」"):
+            self.repo.rename_category(shop, category, new_name)
+            if self.current_shop == shop and self.current_category == category:
+                self.current_category = new_name
+        self.refresh_shop_tree()
+
+    def on_delete_category(self, shop: str, category: str) -> None:
+        if not self._confirm(
+            "确认删除",
+            f"确定要删除分类「{category}」吗？\n该分类下的 {len(self.repo.get_records(shop, category))} 条素材会一起删除。",
+        ):
+            return
+        with self._undo_step(f"删除分类「{category}」"):
+            removed = self.repo.delete_category(shop, category)
+        if not removed:
+            QMessageBox.information(self, "提示", "每个店铺至少要保留一个分类")
+            return
+        if self.current_shop == shop and self.current_category == category:
+            self._set_current(shop, self.repo.first_category(shop))
+        self.refresh_shop_tree()
+        self.refresh_table()
 
     def on_delete_shop(self):
         item = self.shop_tree.currentItem()
@@ -714,13 +868,14 @@ class MainWindow(QMainWindow):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        self.repo.delete_shop(name)
-        if self.current_shop == name:
-            self.current_shop = None
-            self.current_shop_label.setText("请选择左侧店铺")
-            self.table.render([])
+        with self._undo_step("删除店铺"):
+            self.repo.delete_shop(name)
+            if self.current_shop == name:
+                self.current_shop = None
+                self.current_category = None
+                self.current_shop_label.setText("请选择左侧店铺")
+                self.table.render([])
         self.refresh_shop_tree()
-        self.save_data()
 
     def _on_shop_label_context_menu(self, pos) -> None:
         """店铺名右键：填充色（加深预设 + 自选）+ 字体颜色（预设 + 自选）+ 清除，按店铺记忆"""
@@ -778,10 +933,13 @@ class MainWindow(QMainWindow):
         )
 
     def _apply_shop_label_style(self, bg_color=None, text_color=None,
-                                  replace_bg=True, replace_text=True) -> None:
+                                  replace_bg=True, replace_text=True,
+                                  persist=True) -> None:
         """设置当前店铺名样式（背景色 + 字体色），按店铺名记忆。
         replace_bg/replace_text 为 True 时才覆盖对应维度（用于菜单只改其中一项）。
-        颜色为 None 表示清除该维度。"""
+        颜色为 None 表示清除该维度。
+        persist=True 时写入 data.json（菜单改色）；切换到已有店铺时传 False，
+        只是把存下来的颜色套回标签，不必因此写一次盘。"""
         cur = {"bg": None, "text": None}
         if self.current_shop:
             cur = self._shop_label_colors.get(self.current_shop, {"bg": None, "text": None})
@@ -802,34 +960,95 @@ class MainWindow(QMainWindow):
         if cur.get("bg"):
             parts.append("border-radius: 6px;")
         self.current_shop_label.setStyleSheet(" ".join(parts))
+        if persist and self.current_shop:
+            # 颜色要跟着 data.json 走：导出表单图片的标题带读的就是它，
+            # 不落盘的话重启后颜色全丢，导出图和界面就对不上了
+            self.save_data()
 
     def on_shop_selected(self, item, column):
-        self.current_shop = item.text(0) if item.parent() is None else item.parent().text(0)
-        self.current_shop_label.setText(self.current_shop)
-        # 恢复该店铺之前设置的填充色/字体色（没设置过则清除）
-        saved = self._shop_label_colors.get(self.current_shop, {"bg": None, "text": None})
-        self._apply_shop_label_style(bg_color=saved.get("bg"), text_color=saved.get("text"))
+        """点击树节点：顶层=店铺（自动落到它的第一个分类），子级=产品分类。
+
+        界面上**永远有一个明确的「当前分类」**，表格/导出/新增都只针对它，
+        这样"这条记录该归到哪个分类"不会出现歧义。
+        """
+        if item.parent() is None:
+            shop = item.text(0)
+            category = self.repo.first_category(shop)
+        else:
+            shop = item.parent().text(0)
+            # 子节点文字带「（数量）」后缀，分类名从 UserRole 取，别拿后缀当分类名
+            category = item.data(0, Qt.ItemDataRole.UserRole) or item.text(0)
+        self._set_current(shop, category)
         self.refresh_table()
+
+    def _set_current(self, shop: str, category: str) -> None:
+        """记录当前店铺+分类，并把右侧标题、店铺名配色一起带上（一个入口，不散落）"""
+        self.current_shop = shop
+        self.current_category = category
+        self.current_shop_label.setText(shop)
+        saved = self._shop_label_colors.get(shop, {"bg": None, "text": None})
+        self._apply_shop_label_style(bg_color=saved.get("bg"), text_color=saved.get("text"),
+                                     persist=False)
 
     def on_shop_double_clicked(self, item, column):
         if item.childCount() > 0:
             item.setExpanded(not item.isExpanded())
 
-    def _on_shop_tree_menu(self, pos):
-        """店铺树右键菜单：仅支持修改名字"""
-        item = self.shop_tree.itemAt(pos)
+    def _current_item_kind(self) -> str:
+        """右键选中的节点类型：shop=店铺 / category=产品分类 / none=空白处"""
+        item = self.shop_tree.currentItem()
         if item is None:
-            return
-        self.shop_tree.setCurrentItem(item)
+            return "none"
+        return "shop" if item.parent() is None else "category"
+
+    def _on_shop_tree_menu(self, pos):
+        """店铺树右键菜单：店铺 / 分类 / 空白处 各有各的操作，全部在这里收口"""
+        item = self.shop_tree.itemAt(pos)
+        if item is not None:
+            self.shop_tree.setCurrentItem(item)
+        kind = self._current_item_kind()
         menu = QMenu(self)
-        act_rename = menu.addAction("重命名")
+        act_add_shop = menu.addAction("新增店铺")
+        if kind == "shop":
+            shop = self.shop_tree.currentItem().text(0)
+            menu.addSeparator()
+            act_add_cat = menu.addAction("新增产品分类")
+            act_rename = menu.addAction("重命名店铺")
+            menu.addSeparator()
+            act_del_shop = menu.addAction("删除店铺")
+        elif kind == "category":
+            menu.addSeparator()
+            act_add_cat = menu.addAction("新增产品分类")
+            act_rename_cat = menu.addAction("重命名分类")
+            act_del_cat = menu.addAction("删除分类")
         chosen = menu.exec(self.shop_tree.viewport().mapToGlobal(pos))
-        if chosen == act_rename:
+        if chosen is None:
+            return
+        if chosen is act_add_shop:
+            self.on_add_shop()
+        elif kind == "shop" and chosen is act_add_cat:
+            self.on_add_category(shop)
+        elif kind == "shop" and chosen is act_rename:
             self.on_rename_shop()
+        elif kind == "shop" and chosen is act_del_shop:
+            self.on_delete_shop()
+        elif kind == "category":
+            node = self.shop_tree.currentItem()
+            shop = node.parent().text(0)
+            # 🔴 分类名从 UserRole 取：节点文字带「（数量）」后缀（如 分类一（2）），
+            # 拿后缀名去数据层当 old 名会找不到 → 重命名/删除静默失败
+            category = node.data(0, Qt.ItemDataRole.UserRole) or node.text(0)
+            if chosen is act_add_cat:
+                self.on_add_category(shop)
+            elif chosen is act_rename_cat:
+                self.on_rename_category(shop, category)
+            elif chosen is act_del_cat:
+                self.on_delete_category(shop, category)
 
     def refresh_shop_tree(self):
+        """重建店铺树：店铺（顶层）-> 产品分类（子级，带素材数量）"""
         self.shop_tree.clear()
-        for shop_name, records in self.repo.shops.items():
+        for shop_name, categories in self.repo.shops.items():
             shop_item = QTreeWidgetItem([shop_name])
             # 店名不可在树上直接编辑（改名统一走重命名，保证能保存）
             shop_item.setFlags(shop_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -837,17 +1056,41 @@ class MainWindow(QMainWindow):
             shop_item.setFlags(shop_item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
             shop_item.setFlags(shop_item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
             self.shop_tree.addTopLevelItem(shop_item)
-            count_item = QTreeWidgetItem([f"素材数量：{len(records)}"])
-            count_item.setFlags(count_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            # 子项（素材数量）完全不参与拖拽
-            count_item.setFlags(count_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
-            count_item.setFlags(count_item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
-            count_item.setForeground(0, QBrush(QColor("#909399")))
-            shop_item.addChild(count_item)
+            for category, records in categories.items():
+                cat_item = QTreeWidgetItem([f"{category}（{len(records)}）"])
+                # 真实分类名存到 UserRole：树节点文字带「（数量）」后缀，
+                # 选中/恢复时用它取干净的分类名，避免把后缀当分类名用
+                cat_item.setData(0, Qt.ItemDataRole.UserRole, category)
+                cat_item.setFlags(cat_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                # 分类不可拖（拖拽排序只针对店铺），也不可作为 drop 目标
+                cat_item.setFlags(cat_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+                cat_item.setFlags(cat_item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
+                shop_item.addChild(cat_item)
         if self._all_expanded:
             self.shop_tree.expandAll()
         else:
             self.shop_tree.collapseAll()
+        self._restore_tree_selection()
+
+    def _restore_tree_selection(self) -> None:
+        """重建树之后把之前选中的店铺/分类选回去（否则每次刷新都跳回第一项）"""
+        if not self.current_shop:
+            return
+        for i in range(self.shop_tree.topLevelItemCount()):
+            shop_item = self.shop_tree.topLevelItem(i)
+            if shop_item.text(0) != self.current_shop:
+                continue
+            if not self.current_category:
+                self.shop_tree.setCurrentItem(shop_item)
+                return
+            for j in range(shop_item.childCount()):
+                child = shop_item.child(j)
+                real = child.data(0, Qt.ItemDataRole.UserRole) or child.text(0)
+                if real == self.current_category or child.text(0).startswith(self.current_category):
+                    self.shop_tree.setCurrentItem(child)
+                    return
+            self.shop_tree.setCurrentItem(shop_item)
+            return
 
     def on_toggle_tree(self):
         """一键展开/折叠全部店铺"""
@@ -859,23 +1102,32 @@ class MainWindow(QMainWindow):
             self.shop_tree.collapseAll()
             self.btn_toggle_tree.setText("全部展开")
 
-    def select_shop_in_tree(self, name):
+    def select_shop_in_tree(self, name, category: str | None = None):
+        """选中某店铺（默认落到它的第一个分类）并刷新右侧表格"""
         for i in range(self.shop_tree.topLevelItemCount()):
             item = self.shop_tree.topLevelItem(i)
-            if item.text(0) == name:
-                self.shop_tree.setCurrentItem(item)
-                self.on_shop_selected(item, 0)
-                break
+            if item.text(0) != name:
+                continue
+            category = category or self.repo.first_category(name)
+            for j in range(item.childCount()):
+                child = item.child(j)
+                real = child.data(0, Qt.ItemDataRole.UserRole) or child.text(0)
+                if real == category or child.text(0).startswith(category):
+                    item = child
+                    break
+            self.shop_tree.setCurrentItem(item)
+            self.on_shop_selected(item, 0)
+            break
 
     def on_shop_order_changed(self, new_order):
         """拖拽排序结束：按新顺序重排数据层店铺并持久化（不触发 tree 重建，保留动效）"""
-        self.repo.reorder_shops(new_order)
-        self.save_data()
+        with self._undo_step("调整店铺顺序"):
+            self.repo.reorder_shops(new_order)
 
     # ==================== 素材记录管理 ====================
     def refresh_table(self):
-        """按当前店铺重新渲染表格"""
-        records = self.repo.get_records(self.current_shop) if self.current_shop else []
+        """按当前店铺+产品分类重新渲染表格"""
+        records = self._records() if self.current_shop else []
         self.table.render(records)
         # 左侧栏收起时右侧表格保持完整列宽（不被压到字段看不见）。
         # _auto_fit_columns 是 singleShot 异步算列宽的，这里延迟到列宽算完再设最小宽，
@@ -886,16 +1138,34 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(80, _apply_min_width)
         self.selection_label.setText("已选 0 条")
 
+    # ---------- 当前店铺+分类 的统一入口（表格/导出/搜索/记录操作都走这里） ----------
+    def _records(self) -> list:
+        """当前选中的产品分类下的记录列表"""
+        return self.repo.get_records(self.current_shop, self.current_category)
+
     def on_add_blank_record(self):
-        """底部➕号按钮：直接添加一行空白记录到当前店铺"""
+        """底部➕号按钮：在当前店铺末尾添加一行空白记录。
+
+        走「增量追加」而非整表 refresh_table：
+        - 不再 setRowCount(0) 重建所有行，画面不会闪，滚动条也不会被复位到顶部
+        - 已有行的勾选状态保留
+        - 追加后平滑缓动到底部，让新行与➕按钮自然进入视野
+        搜索过滤态下新记录不在结果集内，退回整表渲染（此时本就该看到过滤结果）。
+        """
         if not self.current_shop:
             QMessageBox.information(self, "提示", "请先选择左侧店铺")
             return
         from ..storage import new_blank_record
         record = new_blank_record()
-        self.repo.shops[self.current_shop].append(record)
-        self.repo.save()
-        self.refresh_table()
+        records = self._records()
+        with self._undo_step("添加空白记录"):
+            records.append(record)
+        if self.table.is_filtered():
+            self.refresh_table()
+        else:
+            self.table.append_record(record, len(records) - 1)
+        # 等 Qt 走完布局（新行行高 / 底部余量）再缓动到底部
+        self.table.scroll_to_bottom()
         logger.info("添加空白记录到店铺: %s", self.current_shop)
 
     def on_add_record(self):
@@ -908,10 +1178,9 @@ class MainWindow(QMainWindow):
         record = dialog.get_data()
         if not record:
             return
-        self.repo.add_record(self.current_shop, record)
-        self.refresh_table()
-        self.refresh_shop_tree()
-        self.save_data()
+        with self._undo_step("新增记录"):
+            self.repo.add_record(self.current_shop, self.current_category, record)
+        self._after_records_changed()
 
     def _current_table_row(self) -> int:
         """取当前要操作的行：优先 currentRow；若用户只点了勾选框导致
@@ -923,47 +1192,119 @@ class MainWindow(QMainWindow):
         selected = self.table.selectionModel().selectedIndexes()
         return selected[0].row() if selected else -1
 
+    # ==================== 撤销（Ctrl+Z） ====================
+    @contextmanager
+    def _undo_step(self, label: str):
+        """把一段数据变更包成「可撤销的一步」。
+
+        用法：`with self._undo_step("删除 3 条记录"): <改数据的代码>`
+        - 变更前存一份快照，变更后**只有数据真的变了**才入栈（避免空操作占满撤销栈）
+        - 顺带统一落盘，调用方不用再记得调 save_data()
+        快照里带上 shop_colors：改名/删店铺时配色也跟着回退，不会出现"店铺回来了、
+        颜色还挂在旧名字上"的错位。
+        """
+        before = {"shops": snapshot(self.repo.shops),
+                  "colors": snapshot(self.repo.shop_colors)}
+        yield
+        if self.repo.shops != before["shops"] or self.repo.shop_colors != before["colors"]:
+            self._undo.push(label, before)
+            self.save_data()
+
+    def on_undo(self) -> None:
+        """Ctrl+Z：回退上一步数据变更（撤销本身不再入栈，避免变成"来回横跳"）"""
+        if not self._undo.can_undo():
+            QToolTip.showText(QCursor.pos(), "没有可撤销的操作", self, msecShowTime=1200)
+            return
+        label, data = self._undo.pop()
+        self.repo.shops = data["shops"]
+        self.repo.shop_colors = data["colors"]
+        self._after_records_changed()
+        self.save_data()
+        logger.info("撤销：%s", label)
+        QToolTip.showText(QCursor.pos(), f"已撤销：{label}", self, msecShowTime=1800)
+
+    # ==================== 记录增删：统一入口 ====================
+    def _after_records_changed(self) -> None:
+        """数据改完的统一收尾：刷新表格与店铺树（顺序固定，避免各处漏掉一个）"""
+        self.refresh_table()
+        self.refresh_shop_tree()
+
+    def _confirm(self, title: str, text: str) -> bool:
+        """统一的确认框（默认停在「否」，回车/点「是」才会继续）"""
+        return QMessageBox.question(
+            self, title, text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
+
+    def _remove_records(self, indices: list) -> None:
+        """按原始记录索引批量删除；**倒序**删，前面的删除不会挪动后面记录的位置"""
+        for index in sorted(set(indices), reverse=True):
+            self.repo.remove_record(self.current_shop, self.current_category, index)
+
+    def _duplicate_records(self, indices: list) -> None:
+        """把选中的记录各复制一份，按原顺序追加到当前分类末尾（不弹表单、直接复制）"""
+        records = self._records()
+        for index in sorted(set(indices)):
+            if 0 <= index < len(records):
+                self.repo.add_record(self.current_shop, self.current_category,
+                                     deepcopy(records[index]))
+
+    def _delete_records(self, indices: list, exit_check_mode: bool = False) -> None:
+        """删除记录的唯一入口：确认 → 快照 → 删 → 刷新"""
+        if not indices:
+            return
+        count = len(indices)
+        tip = f"确定要删除选中的 {count} 条记录吗？" if count > 1 else "确定要删除选中的记录吗？"
+        if not self._confirm("确认删除", tip):
+            return
+        with self._undo_step(f"删除 {count} 条记录"):
+            self._remove_records(indices)
+        self._after_records_changed()
+        if exit_check_mode:
+            self.table.set_selection_mode(False)     # 勾选模式操作完自动收回复选框
+        QToolTip.showText(QCursor.pos(), f"已删除 {count} 条记录", self, msecShowTime=1500)
+
+    def _copy_records(self, indices: list, exit_check_mode: bool = False) -> None:
+        """批量复制记录的唯一入口：快照 → 复制 → 刷新（不弹表单）"""
+        if not indices:
+            return
+        with self._undo_step(f"复制 {len(indices)} 条记录"):
+            self._duplicate_records(indices)
+        self._after_records_changed()
+        if exit_check_mode:
+            self.table.set_selection_mode(False)
+        QToolTip.showText(QCursor.pos(), f"已复制 {len(indices)} 条记录", self, msecShowTime=1500)
+
+    def on_delete_records(self, indices: list) -> None:
+        """右键「删除选中的 N 条记录」（选区 / Ctrl+A 全选后）"""
+        if not self.current_shop:
+            QMessageBox.information(self, "提示", "请先选择店铺")
+            return
+        self._delete_records(list(indices))
+
+    def on_copy_records(self, indices: list) -> None:
+        """右键「复制选中的 N 条记录」（选区 / Ctrl+A 全选后）"""
+        if not self.current_shop:
+            QMessageBox.information(self, "提示", "请先选择店铺")
+            return
+        self._copy_records(list(indices))
+
     def on_delete_record(self, row=None):
-        """删除记录：row 为 None 时取当前选中行（按钮），否则为右键菜单指定的行"""
+        """删除单条记录：右键指定行，或按钮/快捷键取当前行；勾选模式下删勾选的那些"""
         if not self.current_shop:
             QMessageBox.information(self, "提示", "请先选择店铺")
             return
         # bool 是 int 子类：误传入信号 bool 时统一按“未指定行”处理
         if not isinstance(row, int) or isinstance(row, bool):
             row = self._current_table_row()
-        # 批量选择模式下勾选了至少一条：批量删除
         checked = self.table.selected_rendered_indices()
         if not self.table.isColumnHidden(0) and checked:
-            reply = QMessageBox.question(
-                self, "确认删除", f"确定要删除选中的 {len(checked)} 条记录吗？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            for ridx in sorted(checked, reverse=True):
-                self.repo.remove_record(self.current_shop, ridx)
-            self.refresh_table()
-            self.refresh_shop_tree()
-            self.save_data()
-            self.table.set_selection_mode(False)  # 操作完成自动收回复选框
-            QToolTip.showText(
-                QCursor.pos(), f"已删除 {len(checked)} 条记录", self, msecShowTime=1500,
-            )
+            self._delete_records(checked, exit_check_mode=True)
             return
         if row < 0:
-            QMessageBox.information(self, "提示", "请先选中要删除的行")
+            QMessageBox.information(self, "提示", "请先选中要删除的行（或右键该行 → 删除记录）")
             return
-        reply = QMessageBox.question(
-            self, "确认删除", "确定要删除选中的记录吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        record_index = self.table.rendered_index(row)
-        self.repo.remove_record(self.current_shop, record_index)
-        self.refresh_table()
-        self.refresh_shop_tree()
-        self.save_data()
+        self._delete_records([self.table.rendered_index(row)])
 
     def on_edit_record(self, row=None):
         """修改记录：row 为 None 时取当前选中行（按钮），否则为右键菜单指定的行"""
@@ -982,7 +1323,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "请先选中要修改的行")
             return
         record_index = self.table.rendered_index(row)
-        old_record = self.repo.get_records(self.current_shop)[record_index]
+        old_record = self._records()[record_index]
 
         dialog = AddRecordDialog(self, record=old_record)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -990,10 +1331,9 @@ class MainWindow(QMainWindow):
         new_record = dialog.get_data()
         if not new_record:
             return
-        self.repo.shops[self.current_shop][record_index] = new_record
-        self.refresh_table()
-        self.refresh_shop_tree()
-        self.save_data()
+        with self._undo_step("修改记录"):
+            self._records()[record_index] = new_record
+        self._after_records_changed()
 
     def on_copy_record(self, row=None):
         """复制记录：与修改一致弹出预填表单，确认后在原记录之后插入一条相同记录"""
@@ -1003,27 +1343,16 @@ class MainWindow(QMainWindow):
         # bool 是 int 子类：误传入信号 bool 时统一按“未指定行”处理
         if not isinstance(row, int) or isinstance(row, bool):
             row = self._current_table_row()
-        # 批量选择模式下勾选了至少一条：直接逐条复制，不再弹表单
+        # 批量选择模式下勾选了至少一条：直接整批复制，不再逐条弹表单
         checked = self.table.selected_rendered_indices()
         if not self.table.isColumnHidden(0) and checked:
-            records = self.repo.get_records(self.current_shop)
-            # 从后往前插入，前面的复制不会顶乱后面记录的位置
-            for ridx in sorted(checked, reverse=True):
-                self.repo.insert_record(self.current_shop, ridx, deepcopy(records[ridx]))
-            self.refresh_table()
-            self.refresh_shop_tree()
-            self.save_data()
-            self.table.set_selection_mode(False)  # 复制完成自动收回复选框
-            QToolTip.showText(
-                QCursor.pos(), f"已复制 {len(checked)} 条记录", self, msecShowTime=1500,
-            )
+            self._copy_records(checked, exit_check_mode=True)
             return
         if row < 0:
             QMessageBox.information(self, "提示", "请先选中要复制的记录")
             return
         record_index = self.table.rendered_index(row)
-        records = self.repo.get_records(self.current_shop)
-        old_record = records[record_index]
+        old_record = self._records()[record_index]
 
         dialog = AddRecordDialog(self, record=old_record)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1032,10 +1361,10 @@ class MainWindow(QMainWindow):
         if not new_record:
             return
         # 插到原记录正后方，并在刷新后选中新复制出的这一行
-        new_pos = self.repo.insert_record(self.current_shop, record_index, new_record)
-        self.refresh_table()
-        self.refresh_shop_tree()
-        self.save_data()
+        with self._undo_step("复制记录"):
+            new_pos = self.repo.insert_record(
+                self.current_shop, self.current_category, record_index, new_record)
+        self._after_records_changed()
         self.table.setCurrentCell(new_pos, 1)
 
     def on_cell_edited(self, row, field, text):
@@ -1043,8 +1372,9 @@ class MainWindow(QMainWindow):
         if not self.current_shop:
             return
         record_index = self.table.rendered_index(row)
-        self.repo.set_record_field(self.current_shop, record_index, field, text)
-        self.save_data()
+        with self._undo_step("修改单元格"):
+            self.repo.set_record_field(self.current_shop, self.current_category,
+                                       record_index, field, text)
         self.table._adjust_row_heights()
 
     def on_paste_image_requested(self, row, col, field_name):
@@ -1063,24 +1393,32 @@ class MainWindow(QMainWindow):
         self.repo.image_counter = new_counter
         record_index = self.table.rendered_index(row)
         # 粘贴不替换：多图列追加到末尾，单图列直接替换（只有一张）
-        if field_name in config.MULTI_IMAGE_FIELDS:
-            self.repo.append_record_image(self.current_shop, record_index, filepath, field_name)
-        else:
-            self.repo.set_record_field(self.current_shop, record_index, field_name, filepath)
+        with self._undo_step("粘贴图片"):
+            if field_name in config.MULTI_IMAGE_FIELDS:
+                self.repo.append_record_image(
+                    self.current_shop, self.current_category,
+                    record_index, filepath, field_name)
+            else:
+                self.repo.set_record_field(
+                    self.current_shop, self.current_category,
+                    record_index, field_name, filepath)
         self.refresh_table()
-        self.save_data()
 
     def on_delete_image_requested(self, row, field_name, img_index):
         """删除单元格内的某张图片：多图移除指定序号，单图直接清空（仅移除引用）"""
         if not self.current_shop:
             return
         record_index = self.table.rendered_index(row)
-        if field_name in config.MULTI_IMAGE_FIELDS:
-            self.repo.remove_record_image(self.current_shop, record_index, img_index, field_name)
-        else:
-            self.repo.set_record_field(self.current_shop, record_index, field_name, "")
+        with self._undo_step("删除图片"):
+            if field_name in config.MULTI_IMAGE_FIELDS:
+                self.repo.remove_record_image(
+                    self.current_shop, self.current_category,
+                    record_index, img_index, field_name)
+            else:
+                self.repo.set_record_field(
+                    self.current_shop, self.current_category,
+                    record_index, field_name, "")
         self.refresh_table()
-        self.save_data()
 
     def on_selection_changed(self, count):
         """表格勾选数量变化时更新底部计数（仅批量选择模式下显示）"""
@@ -1114,10 +1452,11 @@ class MainWindow(QMainWindow):
             return
         self.repo.image_counter = new_counter
         record_index = self.table.rendered_index(row)
-        for filepath in saved:
-            self.repo.append_record_image(self.current_shop, record_index, filepath)
+        with self._undo_step("添加图片"):
+            for filepath in saved:
+                self.repo.append_record_image(
+                    self.current_shop, self.current_category, record_index, filepath)
         self.refresh_table()
-        self.save_data()
 
     # ==================== 搜索 ====================
     def on_search(self):
@@ -1126,7 +1465,7 @@ class MainWindow(QMainWindow):
             if self.current_shop:
                 self.refresh_table()
             return
-        records = self.repo.get_records(self.current_shop)
+        records = self._records()
         matched_indices = [i for i, r in enumerate(records) if keyword in r.get("title", "").lower()]
         matched = [records[i] for i in matched_indices]
         self.table.render(matched, matched_indices)
@@ -1138,12 +1477,17 @@ class MainWindow(QMainWindow):
 
     # ==================== 淘宝登录 ====================
     def _clear_taobao_login(self):
-        """清空淘宝登录状态：删除本地cookie + 更新按钮显示"""
+        """清空淘宝登录状态：本地 cookie + 浏览器 profile 里的登录信息一并清除。
+
+        浏览器 profile 里长期残留的访客 cookie（tracknick 等）会让人误以为还登录着，
+        退出登录时一并清掉，下次必须重新扫码，状态才可信。
+        """
         try:
             self.taobao.clear_cookies()
-            logger.info("已清空淘宝cookie和登录状态")
+            taobao_playwright.clear_profile_login()
+            logger.info("已清空淘宝登录状态（本地 cookie + 浏览器 profile）")
         except Exception as e:
-            logger.warning("清空淘宝cookie失败: %s", e)
+            logger.warning("清空淘宝登录状态失败: %s", e)
         self.btn_taobao_login.setText("淘宝登录")
         self.btn_taobao_login.setToolTip("")
 
@@ -1171,15 +1515,14 @@ class MainWindow(QMainWindow):
             msg.exec()
             clicked = msg.clickedButton()
             if clicked == btn_relogin:
-                # 重新登录：清除本地 cookie 后弹登录框
-                logger.info("用户选择重新登录，清除旧 cookie")
-                self.taobao.clear_cookies()
+                # 重新登录：清除本地 cookie 与浏览器登录信息后弹登录框（保证重新扫码）
+                logger.info("用户选择重新登录，清除旧登录状态")
+                self._clear_taobao_login()
                 self._show_taobao_login_dialog()
             elif clicked == btn_logout:
-                # 退出登录：清除本地 cookie，按钮恢复
-                logger.info("用户选择退出登录，清除 cookie")
-                self.taobao.clear_cookies()
-                self.btn_taobao_login.setText("淘宝登录")
+                # 退出登录：清除本地 cookie 与浏览器登录信息，按钮恢复
+                logger.info("用户选择退出登录，清除登录状态")
+                self._clear_taobao_login()
                 self.btn_taobao_login.setToolTip("登录淘宝获取 cookie，用于后续导入商品素材")
             else:
                 logger.info("用户取消登录操作")
@@ -1264,7 +1607,6 @@ class MainWindow(QMainWindow):
 
     def _on_link_fill_done(self, res: dict, row: int):
         """链接栏填充完成：下载图片并更新当前行记录"""
-        from PyQt6.QtWidgets import QApplication as _QApp
         try:
             if res.get("error"):
                 err = res["error"]
@@ -1276,59 +1618,30 @@ class MainWindow(QMainWindow):
                 return
 
             record_idx = self.table.rendered_index(row)
-            shop_records = self.repo.shops.get(self.current_shop, [])
+            shop_records = self._records()
             if record_idx < 0 or record_idx >= len(shop_records):
                 self._global_loading.hide_overlay()
                 QMessageBox.warning(self, "错误", "行号无效")
                 return
 
             record = shop_records[record_idx]
-            import requests as _req
-            import uuid as _uuid
-            config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
             item_id = str(res.get("item_id", ""))
 
-            def _download(img_url: str, prefix: str = "tb") -> str:
-                if not img_url:
-                    return ""
-                try:
-                    r = _req.get(img_url, timeout=20, headers={"Referer": "https://item.taobao.com/"})
-                    if r.status_code == 200:
-                        ext = "jpg"
-                        low = img_url.lower()
-                        if ".png" in low: ext = "png"
-                        elif ".webp" in low: ext = "webp"
-                        fname = f"{prefix}_{item_id}_{_uuid.uuid4().hex[:8]}.{ext}"
-                        fpath = config.IMAGES_DIR / fname
-                        fpath.write_bytes(r.content)
-                        return str(fpath)
-                except Exception as e:
-                    logger.warning("下载图片失败 %s: %s", img_url[:60], e)
-                return ""
-
-            # 下载链接主图
+            # 下载图片走服务层（失败返回空串，不中断流程）
             main_img = res.get("main_image") or (res.get("images") or [None])[0]
-            link_image = _download(main_img, "tb_main")
-            _QApp.processEvents()
+            link_image = taobao_import.download_image(main_img, "tb_main", item_id)
+            QApplication.processEvents()
 
-            # 下载 SKU 图作为规格图
             spec_images = []
             for img_url in (res.get("sku_images") or []):
-                path = _download(img_url, "tb_sku")
+                path = taobao_import.download_image(img_url, "tb_sku", item_id)
                 if path:
                     spec_images.append(path)
-                _QApp.processEvents()
+                QApplication.processEvents()
             if not spec_images and main_img:
                 spec_images = [link_image] if link_image else []
 
-            # 组装规格文本
-            spec_text = ""
-            if res.get("skus"):
-                parts = []
-                for s in res["skus"][:3]:
-                    opts = ", ".join(s.get("options", [])[:5])
-                    parts.append(f"{s.get('name','')}: {opts}")
-                spec_text = " | ".join(parts)
+            spec_text = taobao_import.build_spec_text(res.get("skus") or [])
 
             # 更新记录（只更新抓到的字段，保留原有的补手/评价/评价图片）
             record["product_id"] = item_id or record.get("product_id", "")
@@ -1351,6 +1664,111 @@ class MainWindow(QMainWindow):
             logger.exception("链接栏填充异常")
             QMessageBox.critical(self, "错误", f"填充失败：{e}")
 
+    # ==================== 一键导入（批量抓取填充） ====================
+    def on_batch_import(self):
+        """一键导入：批量抓取当前店铺所有已填链接的商品信息并填入记录。
+
+        筛选规则：商品链接非空、且尚未导入（标题与链接主图未同时齐备）的记录；
+        已导入过的跳过（单条刷新请用商品链接列右键「抓取并填充到此行」）。
+        """
+        # 0. 正在导入中：忽略重复点击
+        running = getattr(self, "_batch_import_thread", None)
+        if running is not None and running.isRunning():
+            return
+        # 1. 前置检查：店铺
+        if not self.current_shop:
+            QMessageBox.information(self, "提示", "请先在左侧选择一个店铺")
+            return
+        # 2. 前置检查：cookie 登录状态（本地检测，不发网络请求，避免触发风控）
+        if not self.taobao.is_logged_in():
+            QMessageBox.information(self, "提示", "请先点击「淘宝登录」完成登录，再一键导入")
+            return
+        # 3. 筛选待导入任务
+        records = self._records()
+        tasks = []
+        skipped = 0
+        for idx, record in enumerate(records):
+            url = (record.get("product_url") or "").strip()
+            if not url:
+                continue
+            if record.get("title") and record.get("link_image"):
+                skipped += 1
+                continue
+            tasks.append((idx, url))
+        if not tasks:
+            tip = f"（其中 {skipped} 条已导入过，自动跳过）" if skipped else ""
+            QMessageBox.information(
+                self, "提示",
+                f"当前店铺没有待导入的记录{tip}\n请先在「商品链接」列填写淘宝商品链接",
+            )
+            return
+
+        total = len(tasks)
+        logger.info("一键导入开始: 店铺=%s, 待导入=%d, 已跳过=%d",
+                    self.current_shop, total, skipped)
+        self._global_loading.setGeometry(self.centralWidget().rect())
+        self._global_loading.show_with_text(
+            f"正在启动 Chrome 准备批量导入...\n共 {total} 条商品，每条约需 10~20 秒，请耐心等待"
+        )
+        self._global_loading.raise_()
+
+        self._batch_import_thread = QThread()
+        self._batch_import_worker = BatchImportWorker(tasks)
+        self._batch_import_worker.moveToThread(self._batch_import_thread)
+        self._batch_import_thread.started.connect(self._batch_import_worker.run)
+        self._batch_import_worker.progress.connect(self._on_batch_import_progress)
+        self._batch_import_worker.item_done.connect(self._on_batch_import_item_done)
+        self._batch_import_worker.cookie_invalid.connect(self._on_batch_import_cookie_invalid)
+        self._batch_import_worker.finished.connect(self._on_batch_import_finished)
+        self._batch_import_worker.finished.connect(self._batch_import_thread.quit)
+        self._batch_import_thread.start()
+
+    def _on_batch_import_progress(self, cur: int, total: int, url: str):
+        """每条开始抓取：更新中央加载动画的进度文字"""
+        short = url if len(url) <= 46 else url[:43] + "..."
+        self._global_loading.update_text(
+            f"正在导入 {cur}/{total}：{short}\n获取失败的商品会自动跳过"
+        )
+
+    def _on_batch_import_item_done(self, record_index: int, payload: dict):
+        """单条结束：失败的跳过不动记录，成功的把字段填入并落库。
+
+        界面统一在 finished 后刷新（动画期间逐条重建表格只会闪烁并重置滚动位置），
+        数据则逐条保存，中途关闭程序也不丢已导入的部分。
+        """
+        if payload.get("error"):
+            logger.warning("一键导入记录 #%d 失败（跳过）: %s", record_index, payload["error"])
+            return
+        records = self._records()
+        if not (0 <= record_index < len(records)):
+            logger.warning("一键导入记录 #%d 越界，忽略", record_index)
+            return
+        record = records[record_index]
+        for field, value in (payload.get("updates") or {}).items():
+            if value:  # 空值不覆盖原有内容
+                record[field] = value
+        self.repo.save()
+        logger.info("一键导入记录 #%d 填充成功: %s", record_index, payload.get("title", "")[:30])
+
+    def _on_batch_import_cookie_invalid(self, msg: str):
+        """cookie 失效：清空登录状态并提示（动画由 finished 统一收尾）"""
+        logger.warning("一键导入因 cookie 失效提前终止: %s", msg)
+        self._clear_taobao_login()
+
+    def _on_batch_import_finished(self, summary: dict):
+        """全部结束：隐藏中央动画、刷新界面并弹出汇总"""
+        self._global_loading.hide_overlay()
+        self.refresh_table()
+        self.refresh_shop_tree()
+        lines = [f"成功导入：{summary['ok']} 条"]
+        if summary["fail"]:
+            lines.append(f"获取失败（已跳过）：{summary['fail']} 条")
+        if summary["aborted"]:
+            lines.append(f"因 cookie 失效未导入：{summary['aborted']} 条（请重新登录后再试）")
+        QMessageBox.information(self, "一键导入完成", "\n".join(lines))
+        logger.info("一键导入完成: 成功=%d 失败=%d 中止=%d",
+                    summary["ok"], summary["fail"], summary["aborted"])
+
     def on_open_fetch(self):
         """打开抓取商品对话框（粘贴链接抓取标题/价格/主图）"""
         if not self.taobao.is_logged_in():
@@ -1371,47 +1789,23 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "请先在左侧选择一个店铺")
             return
         try:
-            import requests as _req
-            import uuid as _uuid
-            from PyQt6.QtWidgets import QApplication as _QApp
-
-            config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
             item_id = str(res.get("item_id", ""))
-
-            def _download(img_url: str, prefix: str = "tb") -> str:
-                """下载单张图片到本地，返回本地路径；失败返回空串"""
-                if not img_url:
-                    return ""
-                try:
-                    r = _req.get(img_url, timeout=20, headers={"Referer": "https://item.taobao.com/"})
-                    if r.status_code == 200:
-                        ext = "jpg"
-                        low = img_url.lower()
-                        if ".png" in low: ext = "png"
-                        elif ".webp" in low: ext = "webp"
-                        fname = f"{prefix}_{item_id}_{_uuid.uuid4().hex[:8]}.{ext}"
-                        fpath = config.IMAGES_DIR / fname
-                        fpath.write_bytes(r.content)
-                        return str(fpath)
-                except Exception as e:
-                    logger.warning("下载图片失败 %s: %s", img_url[:60], e)
-                return ""
 
             # 1. 下载链接主图（第一张商品主图）
             main_img = res.get("main_image") or (res.get("images") or [None])[0]
-            link_image = _download(main_img, "tb_main")
-            _QApp.processEvents()
+            link_image = taobao_import.download_image(main_img, "tb_main", item_id)
+            QApplication.processEvents()
 
             # 2. 下载 SKU 图作为规格图（多张，全部下载）
-            spec_images = []
             sku_imgs = res.get("sku_images") or []
             logger.info("开始下载 %d 张 SKU 图作为规格图", len(sku_imgs))
-            for i, img_url in enumerate(sku_imgs):
-                path = _download(img_url, "tb_sku")
+            spec_images = []
+            for img_url in sku_imgs:
+                path = taobao_import.download_image(img_url, "tb_sku", item_id)
                 if path:
                     spec_images.append(path)
                 # 每下载一张就让界面响应一次，避免卡死
-                _QApp.processEvents()
+                QApplication.processEvents()
 
             # 如果没有 SKU 图，用商品主图作为规格图
             if not spec_images and main_img:
@@ -1420,13 +1814,7 @@ class MainWindow(QMainWindow):
             logger.info("SKU 图下载完成，共 %d 张", len(spec_images))
 
             # 3. 组装规格文本
-            spec_text = ""
-            if res.get("skus"):
-                parts = []
-                for s in res["skus"][:3]:
-                    opts = ", ".join(s.get("options", [])[:5])
-                    parts.append(f"{s.get('name','')}: {opts}")
-                spec_text = " | ".join(parts)
+            spec_text = taobao_import.build_spec_text(res.get("skus") or [])
 
             # 4. 构建记录（只填抓到的字段，image_paths 留空给好评晒图用）
             record = {
@@ -1434,19 +1822,19 @@ class MainWindow(QMainWindow):
                 "spec_image": spec_images,       # 规格图 = SKU图（多张）
                 "spec": spec_text,
                 "title": res.get("title", ""),
-                "link_image": link_image,         # 链接主图 = 商品主图
+                "link_image": [link_image] if link_image else [],  # 链接主图 = 商品主图
                 "helper": "",
                 "review": "",
                 "image_paths": [],                 # 评价图片留空（用户自己贴好评晒图）
                 "product_url": res.get("url", ""),
             }
 
-            self.repo.add_record(self.current_shop, record)
+            with self._undo_step("抓取商品填充"):
+                self.repo.add_record(self.current_shop, self.current_category, record)
             self.refresh_table()
             self.refresh_shop_tree()
-            self.save_data()
-            logger.info("已填充抓取结果到店铺[%s]，商品ID=%s，规格图%d张",
-                        self.current_shop, item_id, len(spec_images))
+            logger.info("已填充抓取结果到店铺[%s]分类[%s]，商品ID=%s，规格图%d张",
+                        self.current_shop, self.current_category, item_id, len(spec_images))
             QMessageBox.information(self, "成功",
                 f"已添加到店铺「{self.current_shop}」\n"
                 f"标题：{res.get('title','')[:30]}\n"
@@ -1456,7 +1844,25 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"填充失败：{e}")
 
     def _on_taobao_cookies_received(self, cookies: list):
-        """登录成功：保存 cookie 并更新按钮状态（不立即用 requests 验证，避免触发风控）"""
+        """登录成功回调：保存 cookie 并更新按钮状态。
+
+        落库前再校验一次登录硬标志（unb/_nk_）：这是最后一道防线，
+        任何情况下（cookie 文件读取失败、页面状态异常）都不会再出现"假成功"。
+        """
+        has_marker = taobao_session.has_login_cookie(
+            (c.get("name"), c.get("value")) for c in cookies
+        )
+        if not has_marker:
+            logger.error("登录回调缺少登录硬标志（unb/_nk_），共 %d 条 cookie，拒绝标记为已登录",
+                         len(cookies))
+            self._clear_taobao_login()
+            QMessageBox.warning(
+                self, "登录未完成",
+                "未检测到有效的登录态（缺少 unb/_nk_ 登录标志）。\n\n"
+                "请重新点击「淘宝登录」，在弹出的 Chrome 窗口中用淘宝 APP 扫码完成登录。",
+            )
+            return
+
         logger.info("收到登录成功回调，共 %d 条 cookie，开始保存", len(cookies))
         self.taobao.save_cookies(cookies)
         count = len(cookies)
@@ -1470,8 +1876,9 @@ class MainWindow(QMainWindow):
             f"提示：抓取商品时用内置浏览器渲染页面，避免直接请求触发风控。",
         )
 
-    # ==================== 导出 ====================
-    def on_export(self):
+    # ==================== 导出（Excel / 图片 / 截图历史） ====================
+    def on_export_excel(self):
+        """导出当前店铺全部记录为 Excel"""
         if not self.current_shop:
             QMessageBox.information(self, "提示", "请先选择店铺")
             return
@@ -1481,10 +1888,122 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         try:
-            records = self.repo.get_records(self.current_shop)
-            ExcelExporter.export(records, file_path, sheet_name=self.current_shop)
+            records = self._records()
+            ExcelExporter.export(
+                records, file_path,
+                sheet_name=self.current_shop,
+                shop_name=self.current_shop,      # 首行合并的大标题
+            )
             QMessageBox.information(self, "成功", f"导出成功！\n文件保存在：{file_path}")
         except ImportError:
             QMessageBox.warning(self, "错误", "openpyxl库未安装，请运行: pip install openpyxl")
+        except PermissionError:
+            # Windows 上目标文件正在 Excel/WPS 里打开时会被锁定，覆盖写入就是 Errno 13
+            QMessageBox.warning(
+                self, "文件被占用",
+                "导出失败：目标文件正被占用，大概率已在 Excel / WPS 中打开：\n"
+                f"{file_path}\n\n请关闭该文件后重新导出。",
+            )
         except Exception as e:
             QMessageBox.warning(self, "错误", f"导出失败：{str(e)}")
+
+    def _export_records(self, records: list) -> tuple:
+        """导出图片前把记录规整好：**剔掉全是空字段的空白行**，并把表格当前的
+        展开状态按新行号重新对齐（展开态以原始记录索引为键，过滤后索引会位移）。
+
+        返回 (有效记录列表, 展开状态, 跳过的空行数)。
+        """
+        live_state = self.table.expanded_state() if self.table is not None else {}
+        kept, remap = [], {}
+        for old_index, record in enumerate(records):
+            if record_is_empty(record):
+                continue
+            remap[len(kept)] = old_index
+            kept.append(record)
+        expanded = {
+            new_index: live_state[old_index]
+            for new_index, old_index in remap.items()
+            if old_index in live_state
+        }
+        return kept, expanded, len(records) - len(kept)
+
+    def on_export_image(self):
+        """导出表单图片：把当前店铺整张表单（含滚出视口的行）渲染成图片并保存。
+
+        先弹保存对话框（默认落到截图历史目录、文件名「店铺名_序号」），再进行渲染，
+        避免用户取消时白等一场。渲染走离屏副本，主界面不会闪。
+
+        截图与表单所见保持一致：
+        - 顶部标题带的填充色 / 字体色 / 居中与表单里的店铺名一致
+        - 展开的多图格在截图里也是展开的（反之亦然），取自表格当前状态
+        - 单元格里的「➕ / ▼▲」与「（粘贴图片）」占位框不入图
+        - 全是空字段的空白行跳过，不计入记录数
+        """
+        if not self.current_shop:
+            QMessageBox.information(self, "提示", "请先选择店铺")
+            return
+        all_records = self._records()
+        records, expanded_state, skipped = self._export_records(all_records)
+        if not records:
+            tip = ("当前分类的记录都还是空白行，没有可导出的内容"
+                   if all_records else "当前分类还没有记录，无法导出图片")
+            QMessageBox.information(self, "提示", tip)
+            return
+
+        default_path = ScreenshotStore.default_path(self.current_shop)
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "导出表单图片", str(default_path), "PNG 图片 (*.png)"
+        )
+        if not save_path:
+            return
+
+        self._global_loading.setGeometry(self.centralWidget().rect())
+        self._global_loading.show_with_text("正在生成表单图片…\n（记录较多时要等图片加载完）")
+        self._global_loading.raise_()
+        QApplication.processEvents()
+
+        # 顶部标题带的颜色 = 表单里这个店铺名设置的填充色 / 字体色
+        colors = self._shop_label_colors.get(self.current_shop) or {}
+        error = ""
+        result = None
+        try:
+            pixmap = capture_records_table(
+                records,
+                title=self.current_shop,
+                title_bg=colors.get("bg"),
+                title_color=colors.get("text"),
+                expanded_state=expanded_state,
+            )
+            if pixmap is None:
+                error = "图片内容为空"
+            else:
+                result = ScreenshotStore.save(pixmap, save_path, self.current_shop)
+        except Exception as exc:   # 渲染/落盘任何一步失败都不该让程序崩
+            error = str(exc)
+        finally:
+            self._global_loading.hide_overlay()
+
+        if error:
+            logger.warning("导出表单图片失败: %s", error)
+            QMessageBox.warning(self, "失败", f"导出失败：{error}")
+            return
+
+        target, history = result
+        # 导出即进剪贴板：拿到图就能直接 Ctrl+V，不用再去文件里翻
+        QApplication.clipboard().setPixmap(pixmap)
+        logger.info("表单图片已保存并复制到剪贴板: %s -> %s", self.current_shop, target)
+        skipped_tip = f"\n\n（已跳过 {skipped} 条全空记录）" if skipped else ""
+        if target == history:
+            QMessageBox.information(
+                self, "成功", f"图片已保存：\n{target}\n\n图片已复制到剪贴板，可直接粘贴使用。{skipped_tip}")
+        else:
+            QMessageBox.information(
+                self, "成功",
+                f"图片已保存：\n{target}\n\n已同步归档到截图历史：\n{history}"
+                f"\n\n图片已复制到剪贴板，可直接粘贴使用。{skipped_tip}",
+            )
+
+    def on_screenshot_history(self):
+        """打开截图历史：浏览所有归档截图，可看大图（滚轮缩放）、右键另存为"""
+        ScreenshotStore.ensure_dir()   # 首次使用也先把目录建出来，对话框不至于空目录报错
+        ScreenshotHistoryDialog(self, directory=ScreenshotStore.ensure_dir()).exec()

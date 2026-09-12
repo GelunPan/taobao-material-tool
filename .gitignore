@@ -11,3 +11,9 @@ data/
 # IDE
 .idea/
 .vscode/
+
+# WorkBuddy 本地助手数据（记忆/日志，不入库）
+.workbuddy/
+
+# 本地导出的临时 Excel（导出功能产物不入库）
+*.xlsx

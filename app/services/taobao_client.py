@@ -17,12 +17,13 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from .. import config
 from ..utils.logger import get_logger
+from . import taobao_session
 
 logger = get_logger("taobao")
 
 
-# 登录成功的关键 cookie 名（有这些基本说明已登录）
-LOGIN_COOKIE_KEYS = ("_tb_token_", "cookie2", "sgcookie", "unb")
+# 登录判定规则见 taobao_session（唯一来源）：
+# 只认登录后才会下发的 unb / _nk_，不认 tracknick 等访客也会有的 cookie
 
 # 请求时统一带的 UA（移动端 H5，后续抓商品详情用）
 DEFAULT_UA = (
@@ -125,8 +126,8 @@ class TaobaoClient:
         """
         logger.info("开始严格验证 cookie 有效性")
         if not self._has_login_cookie():
-            logger.warning("验证失败：缺少登录关键字段")
-            return False, "缺少登录关键字段（_tb_token_/cookie2 等）"
+            logger.warning("验证失败：缺少登录硬标志")
+            return False, "缺少登录硬标志（unb/_nk_），当前不是有效登录态"
         try:
             r = self.session.get(
                 "https://h5.m.taobao.com/mlapp/orderlist.htm",
@@ -165,21 +166,24 @@ class TaobaoClient:
         return ""
 
     def _has_login_cookie(self) -> bool:
-        """本地 cookie 是否包含登录关键字段（unb/tracknick，真正登录后才下发的硬标志）"""
-        unb = self._get_cookie_value("unb")
-        if unb and unb.strip() not in ("", "0"):
-            return True
-        return bool(self._get_cookie_value("tracknick").strip())
+        """本地 cookie 是否包含登录硬标志（规则见 taobao_session，唯一来源）。
+
+        只认 unb / _nk_：tracknick 等 cookie 在未登录访客浏览淘宝时也会下发，
+        曾据此把「未登录」误判成「已登录」，导致一点登录就提示已获取 cookie。
+        """
+        return taobao_session.has_login_cookie(
+            (c.name, c.value) for c in self.session.cookies
+        )
 
     # ---------- 信息展示 ----------
     def cookie_summary(self) -> str:
         """返回 cookie 摘要字符串，用于 UI 显示登录状态"""
-        if not self._has_login_cookie():
-            return "未登录"
         count = len(self.session.cookies)
-        unb = self._get_cookie_value("unb")
-        if unb:
-            return f"已登录（{count} 条 cookie）"
+        if not self._has_login_cookie():
+            detail = taobao_session.describe_missing(
+                (c.name, c.value) for c in self.session.cookies
+            )
+            return f"未登录（本地共 {count} 条 cookie，{detail}）"
         return f"已登录（{count} 条 cookie）"
 
     # ---------- 商品详情抓取 ----------

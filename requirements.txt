@@ -1,5 +1,6 @@
 PyQt6>=6.5
 PyQt6-WebEngine>=6.5
 openpyxl>=3.1
+Pillow>=10.0    # Excel 导出嵌入缩略图需要（缺了会自动降级为写图片路径，不报错）
 requests>=2.31
 playwright>=1.40

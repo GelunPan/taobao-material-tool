@@ -22,7 +22,15 @@
 """
 import os
 
-from PyQt6.QtCore import QRect, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QPropertyAnimation,
+    QRect,
+    QSize,
+    Qt,
+    QTimer,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QIcon, QKeySequence
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -36,6 +44,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTableWidgetSelectionRange,
     QVBoxLayout,
     QWidget,
 )
@@ -50,6 +59,7 @@ from ..config import (
     SELECT_COL_HEADER,
     SINGLE_IMAGE_FIELDS,
     TABLE_CELL_PAD,
+    TABLE_CENTER_FIELDS,
     TABLE_COLUMN_MODES,
     TABLE_DEFAULT_COL_WIDTH,
     TABLE_GRID,
@@ -82,6 +92,15 @@ _BATCH_CELLS = 6
 _ROW_RESIZE_DEBOUNCE = 30
 # 表头全选复选框边长（与 QSS 中 indicator 尺寸一致）
 _HEADER_CHECK_SIZE = 16
+
+# 「➕」号添加按钮与最后一行的默认间距（像素）
+_ADD_BTN_GAP = 8
+# 内容末尾之外额外放开的滚动余量（像素）：按钮悬浮在最后一行下方、不属于表格内容，
+# 没有这截余量时滚动条滑到最大位置，最后一行底边正好贴住可用底边，按钮无处安放被隐藏
+_ADD_BTN_BOTTOM_SPACE = 56
+
+# 追加记录后滚到底部的缓动时长（毫秒）：够短不拖沓，又能看出是"滑过去"而非瞬移
+_SCROLL_ANIM_MS = 260
 
 # 缩略图不画白底/边框：直接透出单元格（含选中行）背景，图片即“实际尺寸”贴片
 _THUMB_STYLE = "background: transparent; border: none;"
@@ -209,7 +228,9 @@ class MultiImageCell(TableCell):
 
         total = len(self._indexed_paths)
         hidden_count = total - TABLE_MULTI_VISIBLE
-        if total > TABLE_MULTI_VISIBLE:
+        # 截图模式下按钮一律不显示：这里也必须判断，否则任何一次 rebuild（懒加载、
+        # 展开态同步等）都可能把已经隐藏的 ▼/＋ 又显示回来
+        if total > TABLE_MULTI_VISIBLE and not self._table.is_capture_mode():
             self._more_btn.show()
             if self._expanded:
                 self._more_btn.setText("▲")
@@ -244,9 +265,43 @@ class MultiImageCell(TableCell):
         height = self.flow.heightForWidth(width) + 4 + TABLE_MULTI_BTN_H
         return width, height
 
-    def _toggle_expanded(self) -> None:
-        self._expanded = not self._expanded
+    def is_expanded(self) -> bool:
+        """当前是否处于展开态（导出截图时用来对齐主表格的展开/折叠状态）"""
+        return self._expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        """外部指定展开/折叠；状态没变则不做无谓重建"""
+        if self._expanded == expanded:
+            return
+        self._expanded = expanded
         self.rebuild()
+
+    def set_capture_mode(self, on: bool) -> None:
+        """进入/退出「截图模式」：隐藏缩略图下方的小按钮行（▼/▲ 展开收起、+ 添加）。
+
+        这两个符号是交互入口、不属于表单内容，留档截图里不该出现。隐藏后布局会
+        自然收拢，不会留下空白条；行高由 heightForWidth 决定，不受影响。
+        """
+        self._btn_row.setVisible(not on)
+
+    def _toggle_expanded(self) -> None:
+        self.set_expanded(not self._expanded)
+
+
+class _SelectAllCheck(QCheckBox):
+    """勾选列表头的「全选」复选框。
+
+    Qt 三态框的默认点击行为是 未选 → 半选 → 全选 → 未选 循环，用户点一下会先停在
+    半选态，很反直觉。这里覆写 nextCheckState，让点击**只在 全选 / 全不选 之间切换**；
+    半选态只作为行勾选情况（选了一部分）的被动反映，用户点不出来。
+    """
+
+    def nextCheckState(self) -> None:
+        self.setCheckState(
+            Qt.CheckState.Unchecked
+            if self.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
 
 
 class RecordTable(QTableWidget):
@@ -264,6 +319,12 @@ class RecordTable(QTableWidget):
     edit_requested = pyqtSignal(int)
     record_copy_requested = pyqtSignal(int)
     delete_requested = pyqtSignal(int)
+    # 选区操作（Ctrl+A 全选 / 拖选一片区域 → 右键）：按**完整记录行**批量删除/复制，
+    # 参数是原始记录索引列表，与单选的 delete_requested(row) 分开，互不干扰
+    records_delete_requested = pyqtSignal(list)
+    records_copy_requested = pyqtSignal(list)
+    # 撤销：请求回退上一步（Ctrl+Z，焦点在表格内时由表格发出）
+    undo_requested = pyqtSignal()
     # 勾选数量变化（当前勾选行数）
     selection_changed = pyqtSignal(int)
     # 文本格就地编辑完成（渲染行、字段名、新文本）
@@ -287,6 +348,12 @@ class RecordTable(QTableWidget):
         self._layout_guard = False
         self._load_timer = QTimer(self)
         self._load_timer.timeout.connect(self._process_image_batch)
+        # 已叠加到滚动范围上的底部余量（Qt 重算滚动范围后会被清除，需重新叠加）
+        self._scroll_extra_applied = 0
+        # 当前是否为搜索过滤视图（过滤态下新增记录不在结果集内，需退回整表渲染）
+        self._is_filtered = False
+        # 当前是否为「截图模式」（导出表单图片时置真：隐藏 ➕ / ▼ / 粘贴占位等交互控件）
+        self._capture_mode = False
         # 列宽变化时防抖重算行高
         self._row_resize_timer = QTimer(self)
         self._row_resize_timer.setSingleShot(True)
@@ -302,42 +369,48 @@ class RecordTable(QTableWidget):
         self._init_table()
         # ➕号按钮：紧跟最后一条记录后面，点击添加一行空白记录
         # 作为表格(self)子部件，避免viewport重建导致野指针
-        self._add_btn = QPushButton("+", self)
+        # 图标使用素材库的 add_row.svg（蓝色加号），浅蓝圆底衬托
+        self._add_btn = QPushButton("", self)
         self._add_btn.setObjectName("addRowBtn")
         self._add_btn.setFixedSize(34, 34)
+        self._add_btn.setIcon(QIcon(str(ASSETS_DIR / "add_row.svg")))
+        self._add_btn.setIconSize(QSize(18, 18))
         self._add_btn.setToolTip("添加一行空白记录")
         self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_btn.setStyleSheet("""
             QPushButton#addRowBtn {
                 border-radius: 17px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #5BA8FF, stop:1 #389BFF);
-                color: white;
-                font-size: 22px;
-                font-weight: bold;
-                border: none;
+                background: #EAF4FF;
+                border: 1px solid transparent;
             }
             QPushButton#addRowBtn:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #6BB5FF, stop:1 #48A8FF);
+                background: #D9ECFF;
+                border-color: #7CC0F0;
             }
             QPushButton#addRowBtn:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #2E8AE6, stop:1 #1E7AD6);
+                background: #C6E2FF;
+                border-color: #1296db;
             }
         """)
         self._add_btn.clicked.connect(self._on_add_btn_clicked)
         self._add_btn.hide()
+        # 平滑滚动动画：追加记录后把视图缓动到底部。
+        # 复用同一个动画对象（父对象为表格），避免每次滚动都新建 QPropertyAnimation
+        self._scroll_anim = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
+        self._scroll_anim.setDuration(_SCROLL_ANIM_MS)
+        self._scroll_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._scroll_anim.finished.connect(self._update_add_btn_position)
         # 滚动时增量加载新进入可见区的图片 + 更新➕号位置
         self.verticalScrollBar().valueChanged.connect(self._schedule_load_visible)
         self.verticalScrollBar().valueChanged.connect(self._update_add_btn_position)
 
     def _init_table(self):
-        # 第 0 列：勾选列；其后为数据列（商品ID 标题前留空，放置模式开关复选框）
+        # 第 0 列：勾选列；其后为数据列
+        # 🔴 表头文字不要加空格前缀：加了会把「商品ID」顶得偏右（居中后看着不居中）。
+        # 左上角「选择」按钮是悬浮子控件、贴在角格上，宽约一个表头高，
+        # 不会压到居中的表头文字（见 _position_header_check）
         self.setColumnCount(len(TABLE_HEADERS) + 1)
-        header_labels = [SELECT_COL_HEADER, *TABLE_HEADERS]
-        header_labels[1] = "    " + header_labels[1]
-        self.setHorizontalHeaderLabels(header_labels)
+        self.setHorizontalHeaderLabels([SELECT_COL_HEADER, *TABLE_HEADERS])
         self.setAlternatingRowColors(True)
         self.setWordWrap(True)  # 长文本（标题/评价）按列宽自动换行，配合行高自适应
         # 选择规则：
@@ -367,6 +440,8 @@ class RecordTable(QTableWidget):
         self.verticalScrollBar().setSingleStep(15)
         self.horizontalScrollBar().setSingleStep(15)
         header = self.horizontalHeader()
+        # 表头文字一律居中：表头是"字段名的标题"，居中比左对齐更好读、更像一张表
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         header.setMinimumSectionSize(SELECT_COLUMN_WIDTH)  # 列宽下限（勾选列即此宽度），再窄出横向滚动条
         # 勾选列固定窄宽，不参与拉伸、不允许拖宽
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -396,6 +471,17 @@ class RecordTable(QTableWidget):
         self.header_check.setToolTip("点击进入批量选择")
         self.header_check.clicked.connect(self._on_header_btn_clicked)
         self.setColumnHidden(0, True)
+
+        # 勾选列表头的「全选」复选框：进入批量选择后出现在勾选列表头正中，
+        # 一键全选 / 全不选；选了一部分时呈半选态。与 header_check 一样是
+        # 悬浮在表格上的子控件（表头不支持塞控件），位置由 _position_select_all_check 维护
+        self.select_all_check = _SelectAllCheck(self)
+        self.select_all_check.setTristate(True)
+        self.select_all_check.setToolTip("全选 / 全不选本店铺所有记录")
+        self.select_all_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.select_all_check.setFixedSize(_HEADER_CHECK_SIZE, _HEADER_CHECK_SIZE)
+        self.select_all_check.clicked.connect(self._on_select_all_clicked)
+        self.select_all_check.hide()
 
         # 右键菜单（非图片区域：整行 修改/删除）
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -458,6 +544,7 @@ class RecordTable(QTableWidget):
             header.blockSignals(True)
             header.moveSection(new_visual, old_visual)
             header.blockSignals(False)
+        self._position_select_all_check()
 
     def _on_section_resized(self, logical_index: int, _old: int, _new: int) -> None:
         self._position_header_check()
@@ -486,46 +573,102 @@ class RecordTable(QTableWidget):
         super().resizeEvent(event)
         self._distribute_stretch_columns()
         self._update_add_btn_position()
+        self._position_select_all_check()
+        self._schedule_scroll_extension()
+        # 窗口变大后会有更多行进入可视区，补一次懒加载（原代码只在滚动时触发，
+        # 最大化窗口时新露出的行会一直空着不加载缩略图）
+        self._schedule_load_visible()
+
+    def updateGeometries(self) -> None:
+        """Qt 每次按内容重算滚动范围，都会把叠加的底部余量清掉，这里同步复位标记，
+        使 _extend_scroll_for_add_btn 的叠加保持幂等（不会越加越多）"""
+        super().updateGeometries()
+        self._scroll_extra_applied = 0
+
+    def _schedule_scroll_extension(self) -> None:
+        """延迟到下一轮事件循环再施加滚动余量：避开 Qt 布局过程中对滚动范围的重算"""
+        QTimer.singleShot(0, self._extend_scroll_for_add_btn)
+
+    def _extend_scroll_for_add_btn(self) -> None:
+        """在内容之外放开一截滚动余量，让最后一行下方始终能滑出放置「➕」号按钮的空白。
+
+        幂等实现：始终以「当前上限 - 已叠加余量」为基准再加余量，
+        因此 Qt 重算滚动范围（复位标记）或重复调用都不会造成范围累加漂移。
+        """
+        bar = self.verticalScrollBar()
+        base_max = bar.maximum() - self._scroll_extra_applied
+        if base_max <= bar.minimum():
+            return
+        bar.setRange(bar.minimum(), base_max + _ADD_BTN_BOTTOM_SPACE)
+        self._scroll_extra_applied = _ADD_BTN_BOTTOM_SPACE
 
     def _update_add_btn_position(self):
-        """更新➕号按钮位置：紧跟最后一条记录后面居中"""
+        """更新「➕」号按钮位置：优先紧跟最后一行下方居中。
+
+        按钮是悬浮在表格上的子控件、不属于表格内容，因此不能靠扩大滚动范围
+        来保证可见。这里改为「一行完整进入可视区就贴上去」：
+        - 最后一行底边尚未进入可视区（下面还有内容）→ 先隐藏，继续下滑即出现
+        - 下方剩余空间不足以放下按钮 → 把间距压缩到 0，紧贴最后一行显示
+        于是无论多少条记录，滑到最后一行就一定能看到并点到按钮。
+        """
         if not hasattr(self, '_add_btn'):
+            return
+        if self._capture_mode:
+            # 截图模式下底部悬浮 ➕ 不入图：本方法会被多个异步回调触发，
+            # 这里直接拦掉，避免它悄悄把已隐藏的按钮又显示回来
+            self._add_btn.hide()
             return
         row_count = self.rowCount()
         if row_count == 0:
             self._add_btn.hide()
             return
         last_row = row_count - 1
-        # rowViewportPosition 返回相对于 viewport 的坐标，加上表头高度就是表格中的坐标
+        # rowViewportPosition 返回相对于 viewport 的坐标，加表头高度即表格中的坐标
         header_h = self.horizontalHeader().height()
-        row_y = self.rowViewportPosition(last_row)
-        row_h = self.rowHeight(last_row)
-        # 按钮在表格(self)中的 y 坐标 = viewport中的位置 + 表头高度 + 行高 + 间距
-        btn_y = row_y + header_h + row_h + 8
-        btn_x = (self.width() - self._add_btn.width()) // 2
-        # 如果按钮位置超出表格底部，说明最后一行不在可视区，隐藏按钮
-        visible_bottom = self.height() - self.horizontalScrollBar().height() - 4
-        if btn_y > visible_bottom - self._add_btn.height():
+        row_bottom = self.rowViewportPosition(last_row) + header_h + self.rowHeight(last_row)
+        btn_h = self._add_btn.height()
+        # 可用底部边界：表格底部扣除横向滚动条与少量留白
+        usable_bottom = self.height() - self.horizontalScrollBar().height() - 4
+        if row_bottom > usable_bottom:
             self._add_btn.hide()
             return
-        self._add_btn.move(btn_x, btn_y)
+        y = row_bottom + _ADD_BTN_GAP
+        if y + btn_h > usable_bottom:   # 下方空间不够，改为紧贴最后一行
+            y = row_bottom
+        self._add_btn.move((self.width() - self._add_btn.width()) // 2, y)
         self._add_btn.show()
         self._add_btn.raise_()
 
     def _on_add_btn_clicked(self):
-        """点击➕号：异步发出信号，避免在点击事件中刷新表格导致崩溃"""
-        # 用 QTimer 异步发出信号，等按钮点击事件处理完再刷新表格
+        """点击➕号：异步发出信号，避免在点击事件中刷新表格导致崩溃。
+        追加完成后的「滚到底部」由 append_record 的调用方通过 scroll_to_bottom 触发，
+        这里不再硬编码延迟，避免时序不稳导致偶尔没滚到位。"""
         QTimer.singleShot(0, self.add_row_requested.emit)
-        # 延迟滚动到最后一行，等表格刷新完成
-        QTimer.singleShot(100, self._scroll_to_last_row)
 
-    def _scroll_to_last_row(self):
-        """滚动到最后一行，确保➕号按钮可见"""
-        if self.rowCount() > 0:
-            # 用 model index 滚动，避免 item 为 None 导致崩溃
-            idx = self.model().index(self.rowCount() - 1, 1)
-            self.scrollTo(idx)
+    def scroll_to_bottom(self, animated: bool = True) -> None:
+        """把视图滚动到底部（追加记录后调用，确保新行与「➕」按钮可见）。
+
+        滚动范围要等 Qt 走完本轮布局（新行行高、底部余量重算）才稳定，
+        因此延到下一轮事件循环再执行，避免滚到"上一版的底部"又停在半路。
+        """
+        QTimer.singleShot(0, lambda: self._do_scroll_to_bottom(animated))
+
+    def _do_scroll_to_bottom(self, animated: bool) -> None:
+        # 余量重算是幂等的，这里再补一次，保证目标位置就是真正的最底部
+        self._extend_scroll_for_add_btn()
+        bar = self.verticalScrollBar()
+        target = bar.maximum()
+        if bar.value() >= target:
             self._update_add_btn_position()
+            return
+        if not animated:
+            bar.setValue(target)
+            self._update_add_btn_position()
+            return
+        self._scroll_anim.stop()
+        self._scroll_anim.setStartValue(bar.value())
+        self._scroll_anim.setEndValue(target)
+        self._scroll_anim.start()
 
     def reset_column_layout(self) -> None:
         """清除用户手动列宽记忆并重新自适应（供外部“恢复默认列宽”使用）"""
@@ -621,34 +764,20 @@ class RecordTable(QTableWidget):
                  为 None 时视为渲染的就是原始列表。
         """
         self._rendered_indices = list(indices) if indices is not None else list(range(len(records)))
+        self._is_filtered = indices is not None
         self._image_jobs = []
         self._loaded_thumbs.clear()
         self._row_checks.clear()
         self._load_timer.stop()
         self._row_resize_timer.stop()
+        self._scroll_anim.stop()   # 整表重建会复位滚动范围，先停掉进行中的滚动动画
 
         self.setUpdatesEnabled(False)
         self.blockSignals(True)  # 批量 setItem 不触发 cellChanged，避免误写库
         self.setRowCount(0)
         self.setRowCount(len(records))
         for row, record in enumerate(records):
-            self._render_select_cell(row)
-            for field_col, field in enumerate(RECORD_FIELDS):
-                col = field_col + 1  # 数据列整体右移一位（第 0 列为勾选列）
-                value = record.get(field, "")
-                if field in MULTI_IMAGE_FIELDS:
-                    paths = value if isinstance(value, list) else ([value] if value else [])
-                    self._render_image_cell(row, col, paths, field, multi=True)
-                elif field in SINGLE_IMAGE_FIELDS:
-                    self._render_image_cell(row, col, [value] if value else [], field, multi=False)
-                else:
-                    text = "" if value is None else str(value)
-                    # 文本列保留可编辑标志：双击直接进入就地编辑，编辑结束由 cell_edited 落库
-                    item = QTableWidgetItem(text)
-                    if text:
-                        # 完整内容已靠换行展示，tooltip 仅作悬停速览
-                        item.setToolTip(text)
-                    self.setItem(row, col, item)
+            self._render_row(row, record)
         self.blockSignals(False)
         self.setUpdatesEnabled(True)
 
@@ -659,12 +788,180 @@ class RecordTable(QTableWidget):
         QTimer.singleShot(0, self._auto_fit_columns)
         QTimer.singleShot(0, self._adjust_row_heights)
         QTimer.singleShot(0, self._position_header_check)
+        # 记录数变化后重算底部滚动余量（保证最后一行下方能滑出「➕」号按钮的位置）
+        self._schedule_scroll_extension()
         # 首屏图片立即开始分片加载
         self._schedule_load_visible()
+
+    def _render_row(self, row: int, record: dict) -> None:
+        """渲染单行内容（勾选列 + 各数据列）。
+
+        抽出来供整表 render 与增量 append_record 共用，避免两处渲染逻辑各写一遍
+        而慢慢走样（改了一处忘了另一处）。
+        """
+        self._render_select_cell(row)
+        for field_col, field in enumerate(RECORD_FIELDS):
+            col = field_col + 1  # 数据列整体右移一位（第 0 列为勾选列）
+            value = record.get(field, "")
+            if field in MULTI_IMAGE_FIELDS:
+                paths = value if isinstance(value, list) else ([value] if value else [])
+                self._render_image_cell(row, col, paths, field, multi=True)
+            elif field in SINGLE_IMAGE_FIELDS:
+                self._render_image_cell(row, col, [value] if value else [], field, multi=False)
+            else:
+                text = "" if value is None else str(value)
+                # 文本列保留可编辑标志：双击直接进入就地编辑，编辑结束由 cell_edited 落库
+                item = QTableWidgetItem(text)
+                if text:
+                    # 完整内容已靠换行展示，tooltip 仅作悬停速览
+                    item.setToolTip(text)
+                item.setTextAlignment(self._text_alignment(field))
+                self.setItem(row, col, item)
+
+    # ---------- 增量追加 ----------
+    def is_filtered(self) -> bool:
+        """当前是否处于搜索过滤视图（过滤态下新增记录不在结果集内）"""
+        return self._is_filtered
+
+    def append_record(self, record: dict, index: int) -> int:
+        """在表格末尾增量追加一行，返回新行号。
+
+        与整表 render 的区别（正是「点添加闪一下 / 跳回 1 号记录」的根因所在）：
+        - 只重建新行，老行的 cellWidget（图片/勾选框）原样保留，没有整表重绘的瞬间闪动
+        - 不调用 setRowCount(0)，垂直滚动条不会被 Qt 复位到顶部
+        - 已勾选的行不会被清空（整表 render 会重建所有勾选框、勾选态全丢）
+        index 为该记录在原始记录列表中的位置，供 rendered_index 反查。
+        """
+        row = self.rowCount()
+        self._rendered_indices.append(index)
+        self.blockSignals(True)   # 批量 setItem 不触发 cellChanged，避免误写库
+        try:
+            self.setRowCount(row + 1)
+            self._render_row(row, record)
+        finally:
+            self.blockSignals(False)
+        # 列数未变，无需重新自适应列宽；只校正新行行高
+        QTimer.singleShot(0, lambda r=row: self._adjust_row_height(r))
+        self._schedule_scroll_extension()
+        self._schedule_load_visible()
+        # 新行为未勾选：全选框的三态（全选 / 半选 / 未选）要跟着变
+        self._sync_header_check()
+        return row
 
     def rendered_index(self, row: int) -> int:
         """渲染行号 -> 原始记录列表索引（供修改/删除定位真实记录）"""
         return self._rendered_indices[row]
+
+    # ---------- 选区：一律按「完整记录行」判定 ----------
+    @staticmethod
+    def _text_alignment(field: str) -> int:
+        """文本列对齐：短字段（如商品ID）居中更好读，其余左对齐。
+
+        对齐规则只在 config.TABLE_CENTER_FIELDS 里定义一份，表格与 Excel 导出共用，
+        避免两处各写一遍慢慢走样。
+        """
+        horizontal = (Qt.AlignmentFlag.AlignCenter if field in TABLE_CENTER_FIELDS
+                      else Qt.AlignmentFlag.AlignLeft)
+        return int(horizontal | Qt.AlignmentFlag.AlignVCenter)
+
+    def _selected_rendered_rows(self) -> list:
+        """选区涉及的所有渲染行号（升序、去重）"""
+        rows = set()
+        for rng in self.selectedRanges():
+            for r in range(rng.topRow(), rng.bottomRow() + 1):
+                if 0 <= r < self.rowCount():
+                    rows.add(r)
+        return sorted(rows)
+
+    def selected_record_indices(self) -> list:
+        """当前选区对应的**完整记录**索引（原始记录列表下标，升序、去重）。
+
+        判定规则：选区只要碰到某一行，整条记录就算选中 —— 拖选一片区域时用户想的是
+        「这几条记录」，而不是「这几个格子」。没有任何选区时退回当前行。
+        """
+        rows = self._selected_rendered_rows()
+        if not rows and self.currentRow() >= 0:
+            rows = [self.currentRow()]
+        return [self._rendered_indices[r]
+                for r in rows if 0 <= r < len(self._rendered_indices)]
+
+    def expand_selection_to_rows(self) -> None:
+        """把选区涉及的每一行**整行选中**，给出「这几条记录已选中」的视觉反馈"""
+        rows = self._selected_rendered_rows()
+        if not rows:
+            return
+        last_col = self.columnCount() - 1
+        self.clearSelection()
+        for row in rows:
+            self.setRangeSelected(QTableWidgetSelectionRange(row, 0, row, last_col), True)
+
+    def select_all_rows(self) -> None:
+        """Ctrl+A：选中全部记录行（整行，非单元格）"""
+        if self.rowCount() == 0:
+            return
+        last_col = self.columnCount() - 1
+        self.clearSelection()
+        self.setRangeSelected(
+            QTableWidgetSelectionRange(0, 0, self.rowCount() - 1, last_col), True
+        )
+
+    # ---------- 截图模式 / 展开状态同步（供导出表单图片使用） ----------
+    def set_capture_mode(self, on: bool) -> None:
+        """进入/退出「截图模式」：把所有**属于交互、不属于表单内容**的控件隐藏掉。
+
+        隐藏范围：各行的 ➕（添加图片）、▼/▲（展开收起）小按钮，单图列空位上的
+        「（粘贴图片）」虚线占位框，以及底部悬浮的 ➕（见 `_update_add_btn_position`）。
+        左上角「选择」按钮与勾选列表头全选框由 table_capture 另行处理。
+        """
+        self._capture_mode = on
+        for row in range(self.rowCount()):
+            for col in range(1, self.columnCount()):
+                widget = self.cellWidget(row, col)
+                if widget is None:
+                    continue
+                if isinstance(widget, MultiImageCell):
+                    widget.set_capture_mode(on)
+                    continue
+                for label in widget.findChildren(QLabel):
+                    if label.property("pastePlaceholder"):
+                        label.setVisible(not on)
+        self._update_add_btn_position()
+
+    def is_capture_mode(self) -> bool:
+        """当前是否为截图模式（单元格 rebuild 时据此决定要不要显示 ▼/＋ 按钮）"""
+        return self._capture_mode
+
+    def expanded_state(self) -> dict:
+        """当前各多图单元格的展开状态：{原始记录索引: {已展开的字段名}}。
+
+        用原始记录索引作键（而非渲染行号），这样调用方即使先筛掉空记录、
+        再按新行号重新对齐，也能把展开状态准确套回去。
+        """
+        state: dict = {}
+        for row in range(self.rowCount()):
+            if row >= len(self._rendered_indices):
+                break
+            for col, field in enumerate(RECORD_FIELDS, start=1):
+                if field not in MULTI_IMAGE_FIELDS:
+                    continue
+                widget = self.cellWidget(row, col)
+                if isinstance(widget, MultiImageCell) and widget.is_expanded():
+                    state.setdefault(self._rendered_indices[row], set()).add(field)
+        return state
+
+    def apply_expanded_state(self, state: dict) -> None:
+        """把展开状态套到本表格（截图离屏副本用）：命中的多图格重建为展开态，
+        其余保持默认折叠。这样「表单里展开了，导出图也就是展开的」。"""
+        for row in range(self.rowCount()):
+            if row >= len(self._rendered_indices):
+                break
+            fields = state.get(self._rendered_indices[row]) or ()
+            for col, field in enumerate(RECORD_FIELDS, start=1):
+                if field not in MULTI_IMAGE_FIELDS:
+                    continue
+                widget = self.cellWidget(row, col)
+                if isinstance(widget, MultiImageCell):
+                    widget.set_expanded(field in fields)
 
     # ---------- 勾选列 ----------
     def _render_select_cell(self, row: int) -> None:
@@ -690,22 +987,67 @@ class RecordTable(QTableWidget):
         self.header_check.setGeometry(0, 0, box_w, header.height())
         self.header_check.show()
         self.header_check.raise_()
-        # 商品ID表头文字右对齐，给左上角按钮让出位置（数据格对齐不受影响）
-        item = self.horizontalHeaderItem(1)
-        if item is not None:
-            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # 表头文字保持居中（与其它列一致）：按钮贴在角格（x≈0..表头高），
+        # 商品ID 表头居中后的文字离它还有一段距离，不会互相遮挡
+        self._position_select_all_check()
+
+    def _position_select_all_check(self) -> None:
+        """把「全选」复选框摆到勾选列表头正中。
+
+        表头不支持往 section 里塞控件，所以和 header_check 一样用「悬浮子控件 +
+        手工定位」：x 取该 section 在视口中的位置，被横向滚动推出可视区时隐藏。
+        """
+        if not hasattr(self, "select_all_check"):
+            return
+        header = self.horizontalHeader()
+        if self.isColumnHidden(0) or self.rowCount() == 0:
+            self.select_all_check.hide()
+            return
+        size = self.select_all_check.width()
+        left = header.x() + header.sectionViewportPosition(0)
+        right = left + header.sectionSize(0)
+        # 被横向滚动挤出表头可视区（或剩余空间塞不下）时隐藏，避免遮住行号列
+        if left < header.x() or right > header.x() + header.width() or right - left < size:
+            self.select_all_check.hide()
+            return
+        self.select_all_check.move(
+            left + (right - left - size) // 2,
+            (header.height() - size) // 2,
+        )
+        self.select_all_check.show()
+        self.select_all_check.raise_()
 
     def _reset_header_check(self) -> None:
-        """render 后行勾选全部清零，按钮回到默认“选择”图标"""
+        """render 后行勾选全部清零，按钮回到默认“选择”图标，全选框回到未选"""
         self.header_check.setIcon(QIcon(str(ASSETS_DIR / "select.svg")))
+        self._sync_header_check()
 
     def _on_row_check_changed(self, *_args) -> None:
         self._sync_header_check()
         self.selection_changed.emit(self.selected_count())
 
+    def _on_select_all_clicked(self, _checked: bool = False) -> None:
+        """表头全选框被点击：还没全选就全选，已全选则全不选（半选态点击 = 全选）"""
+        total = len(self._row_checks)
+        self._set_all_rows(self.selected_count() < total)
+
     def _sync_header_check(self) -> None:
-        """勾选变化：表头不再有三态框，仅由底部“已选 N 条”反馈进度"""
-        pass
+        """按当前行勾选情况同步表头全选框的三态：
+        全没选→未选，全选→选中，选了一部分→半选。"""
+        if not hasattr(self, "select_all_check"):
+            return
+        total = len(self._row_checks)
+        checked = self.selected_count()
+        if total == 0 or checked == 0:
+            state = Qt.CheckState.Unchecked
+        elif checked >= total:
+            state = Qt.CheckState.Checked
+        else:
+            state = Qt.CheckState.PartiallyChecked
+        self.select_all_check.blockSignals(True)
+        self.select_all_check.setCheckState(state)
+        self.select_all_check.blockSignals(False)
+        self._position_select_all_check()
 
     def total_min_width(self) -> int:
         """右侧表格的最小展示宽度：行号列 + 商品ID 到“图片”列（含）的最小宽 + 面板边距。
@@ -726,6 +1068,18 @@ class RecordTable(QTableWidget):
 
     # ---------- 键盘粘贴（Ctrl+V） ----------
     def keyPressEvent(self, event) -> None:
+        # Ctrl+A：全选（整行）。放在最前面，避免被后面的复制/删除逻辑抢先吃掉
+        if event.matches(QKeySequence.StandardKey.SelectAll):
+            self.select_all_rows()
+            event.accept()
+            return
+        # Ctrl+Z 撤销：这里必须 `event.accept()`，否则事件继续冒泡到主窗口会被
+        # 再处理一次，一次按键撤销两步。就地编辑单元格时焦点在编辑器上，
+        # 由编辑器自带的撤销接管，不会走到这里。
+        if event.matches(QKeySequence.StandardKey.Undo):
+            self.undo_requested.emit()
+            event.accept()
+            return
         if event.matches(QKeySequence.StandardKey.Paste) and self._paste_to_current_cell():
             return
         if event.matches(QKeySequence.StandardKey.Copy):
@@ -932,48 +1286,64 @@ class RecordTable(QTableWidget):
         self.cell_edited.emit(row, field, "" if item is None else item.text())
 
     # ---------- 行高自适应 ----------
-    def _adjust_row_heights(self) -> None:
-        """逐行按各列实际需要的高度设置行高：文本换行高度与图片排布高度取最大值。
+    def _row_needed_height(self, row: int) -> int:
+        """该行按各列实际内容需要的高度：文本换行高度与图片排布高度取最大值。
         不设高度上限，长文本完整换行展示，行高仅有下限保底。"""
+        needed = TABLE_ROW_MIN_HEIGHT
+        font_metrics = self.fontMetrics()
+        for col in range(self.columnCount()):
+            col_width = self.columnWidth(col)
+            if col_width <= 0:
+                continue
+            widget = self.cellWidget(row, col)
+            if widget is not None:
+                if widget.hasHeightForWidth():
+                    # hfw 按控件物理宽度（列宽扣除 item 横向 padding 与网格线）计算内容高，
+                    # 再补回纵向被扣掉的部分得到所需行高
+                    physical_w = max(1, col_width - TABLE_ITEM_PAD_H - TABLE_GRID)
+                    content_h = widget.heightForWidth(physical_w)
+                    needed = max(needed, content_h + TABLE_ITEM_PAD_V + TABLE_GRID)
+                else:
+                    # TableCell.sizeHint 已统一补偿 item padding
+                    needed = max(needed, widget.sizeHint().height())
+                continue
+            item = self.item(row, col)
+            text = item.text() if item is not None else ""
+            if text:
+                text_width = max(20, col_width - TABLE_TEXT_HPAD)
+                text_rect = font_metrics.boundingRect(
+                    QRect(0, 0, text_width, 0),
+                    Qt.TextFlag.TextWordWrap,
+                    text,
+                )
+                needed = max(needed, text_rect.height() + TABLE_TEXT_VPAD)
+        return max(TABLE_ROW_MIN_HEIGHT, needed)
+
+    def _adjust_row_height(self, row: int) -> None:
+        """只校正单行行高（增量追加后调用，避免为新行重排整张表）"""
+        if not 0 <= row < self.rowCount():
+            return
+        height = self._row_needed_height(row)
+        if self.rowHeight(row) != height:
+            self.setRowHeight(row, height)
+        self._update_add_btn_position()
+        # 行高变化会改变内容总高，重算底部滚动余量
+        self._schedule_scroll_extension()
+
+    def _adjust_row_heights(self) -> None:
+        """逐行按各列实际需要的高度设置行高（整表 / 窗口宽度变化时使用）"""
         count = self.rowCount()
         if count == 0:
             return
-        font_metrics = self.fontMetrics()
         for row in range(count):
-            needed = TABLE_ROW_MIN_HEIGHT
-            for col in range(self.columnCount()):
-                col_width = self.columnWidth(col)
-                if col_width <= 0:
-                    continue
-                widget = self.cellWidget(row, col)
-                if widget is not None:
-                    if widget.hasHeightForWidth():
-                        # hfw 按控件物理宽度（列宽扣除 item 横向 padding 与网格线）计算内容高，
-                        # 再补回纵向被扣掉的部分得到所需行高
-                        physical_w = max(1, col_width - TABLE_ITEM_PAD_H - TABLE_GRID)
-                        content_h = widget.heightForWidth(physical_w)
-                        needed = max(needed, content_h + TABLE_ITEM_PAD_V + TABLE_GRID)
-                    else:
-                        # TableCell.sizeHint 已统一补偿 item padding
-                        needed = max(needed, widget.sizeHint().height())
-                    continue
-                item = self.item(row, col)
-                text = item.text() if item is not None else ""
-                if text:
-                    text_width = max(20, col_width - TABLE_TEXT_HPAD)
-                    text_rect = font_metrics.boundingRect(
-                        QRect(0, 0, text_width, 0),
-                        Qt.TextFlag.TextWordWrap,
-                        text,
-                    )
-                    needed = max(needed, text_rect.height() + TABLE_TEXT_VPAD)
-            height = max(TABLE_ROW_MIN_HEIGHT, needed)
+            height = self._row_needed_height(row)
             if self.rowHeight(row) != height:
                 self.setRowHeight(row, height)
+        self._update_add_btn_position()
+        # 行高变化会改变内容总高，重算底部滚动余量
+        self._schedule_scroll_extension()
 
     # ---------- 图片懒加载 ----------
-        self._update_add_btn_position()
-
     def _schedule_load_visible(self, *args) -> None:
         """有未加载的图片且定时器空闲时，启动分片加载"""
         if self._image_jobs and not self._load_timer.isActive():
@@ -1027,6 +1397,8 @@ class RecordTable(QTableWidget):
         placeholder = QLabel("（粘贴图片）")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         placeholder.setStyleSheet(_PLACEHOLDER_STYLE)
+        # 打标记：截图模式下据此隐藏（占位框是交互提示，不属于表单内容）
+        placeholder.setProperty("pastePlaceholder", True)
         place_w = place_h = TABLE_SINGLE_THUMB + 2 * TABLE_CELL_PAD
         # 固定占位框自身尺寸，再用容器居中：行被其他内容撑高时虚线框不会被拉长
         placeholder.setFixedSize(place_w, place_h)
@@ -1079,18 +1451,28 @@ class RecordTable(QTableWidget):
         elif chosen == act_copy:
             self.record_copy_requested.emit(row)
 
-    # ---------- 右键菜单（整行：修改/删除） ----------
+    # ---------- 右键菜单（整行：修改/复制/删除，支持多选） ----------
     def _show_context_menu(self, pos) -> None:
+        """右键：右键落在已选区域内时作用于**整个选区**，否则只作用于右键所在的这一行。
+
+        批量删除/复制的判定统一走 selected_record_indices()（选区即整条记录），
+        菜单标题会写明条数，避免"以为删一条结果删了一片"。
+        """
         row = self.rowAt(pos.y())
         if row < 0:
             return
-        # 右键落在哪个格就选中哪个格（隐藏的勾选列回退到首个数据列），
-        # 保证“修改记录/删除”始终作用于右键所在的这条记录
         col = self.columnAt(pos.x())
         if col <= 0:
             col = 1
-        self.clearSelection()
-        self.setCurrentCell(row, col)
+        if row in self._selected_rendered_rows():
+            # 落在已选区域内：保持选区，并把这些行整行高亮
+            self.expand_selection_to_rows()
+        else:
+            # 落在选区外：只选右键这一条
+            self.clearSelection()
+            self.setCurrentCell(row, col)
+        indices = self.selected_record_indices()
+        multi = len(indices) > 1
         menu = QMenu(self)
 
         # 链接列（product_url）额外增加抓取和填充选项
@@ -1099,16 +1481,30 @@ class RecordTable(QTableWidget):
             # 直接从表格单元格获取链接文本
             link_item = self.item(row, col)
             link_url = link_item.text() if link_item else ""
-            menu.addSeparator()
             act_fetch = menu.addAction("🔍 抓取此链接")
             act_fill = menu.addAction("📥 抓取并填充到此行")
             menu.addSeparator()
 
+        suffix = f"选中的 {len(indices)} 条" if multi else ""
         act_edit = menu.addAction("修改记录")
-        act_copy = menu.addAction("复制记录")
+        act_copy = menu.addAction(f"复制{suffix}记录")
         menu.addSeparator()
-        act_delete = menu.addAction("删除记录")
+        act_delete = menu.addAction(f"删除{suffix}记录")
         chosen = menu.exec(self.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if multi:
+            if chosen == act_copy:
+                self.records_copy_requested.emit(indices)
+            elif chosen == act_delete:
+                self.records_delete_requested.emit(indices)
+            elif chosen == act_edit:
+                self.edit_requested.emit(row)   # 多选时"修改"只作用于右键那一条
+            elif field_name == "product_url" and chosen == act_fetch:
+                self.link_fetch_requested.emit(row, link_url)
+            elif field_name == "product_url" and chosen == act_fill:
+                self.link_fill_requested.emit(row, link_url)
+            return
         if chosen == act_edit:
             self.edit_requested.emit(row)
         elif chosen == act_copy:

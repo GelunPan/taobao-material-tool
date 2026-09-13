@@ -4,10 +4,20 @@
 表格渲染、搜索、导出会自动跟随，无需改动 UI 代码。
 """
 from pathlib import Path
+import sys
 
 # ---------- 路径 ----------
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
+# 冻结（PyInstaller onedir）时，BASE_DIR 指向 _internal。只读资源（图标 / qss）仍从
+# 此处取；但用户数据必须放到 _internal 之外的安装根目录 data/，原因有二：
+#   1. _internal 是“冻结运行时”，重装 / 修复时会被整体覆盖，放在里面会丢数据；
+#   2. 保持 _internal 纯净，便于校验与排错。
+# 未冻结（源码直跑）时仍用项目内的 data/，开发调试不受影响。
+if getattr(sys, "frozen", False):
+    INSTALL_DIR = Path(sys.executable).resolve().parent
+    DATA_DIR = INSTALL_DIR / "data"
+else:
+    DATA_DIR = BASE_DIR / "data"
 IMAGES_DIR = DATA_DIR / "images"
 DATA_FILE = DATA_DIR / "data.json"
 SCREENSHOTS_DIR = DATA_DIR / "screenshots"   # 表单截图历史目录（一键截图 + 历史查看共用）

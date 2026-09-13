@@ -160,6 +160,55 @@ python main.py
 
 ---
 
+## 打包成安装程序（exe）
+
+把源码打包成一个**极简安装向导 exe**：运行后**选安装位置 → 点安装 → 在桌面创建快捷方式**，无需 Inno Setup / NSIS。
+
+### 打包前提
+
+- **操作系统**：Windows 10/11（PyInstaller 跨平台，但本工具依赖 Qt WebEngine + Playwright，只在 Windows 验证）
+- **本机 Python 环境**：已安装 `PyInstaller`、项目依赖（`PyQt6`、`PyQt6-WebEngine`、`playwright` 等），且与 `requirements.txt` 一致
+- 打包机已执行过 `playwright install chromium`（淘宝模块依赖的浏览器驱动）
+
+### 一键打包
+
+```bash
+# 在项目根目录执行，自动完成两步：
+#   1. 把 onedir 应用目录压缩成 installer/payload.zip
+#   2. 用 PyInstaller 把 installer/installer.py + payload.zip 打成一个安装程序 exe
+python installer/build_installer.py
+```
+
+产物：`dist/淘宝评价素材整理工具安装程序/淘宝评价素材整理工具安装程序.exe`
+（单文件安装程序，约 580MB——内含完整应用；安装后占用相近，因内置 Qt WebEngine 与 Playwright 的 Chromium 驱动无法再压缩）
+
+### 安装程序工作流
+
+1. **选择安装位置**：默认装到用户可写目录 `%LOCALAPPDATA%\淘宝评价素材整理工具`，也可点「浏览…」自选（避开 `C:\Program Files` 的写权限坑）
+2. **点击安装**：把内嵌的完整应用解压到所选目录，约 30~60 秒
+3. **桌面快捷方式**：自动在桌面生成 `淘宝评价素材整理工具.lnk`，指向安装目录里的 `淘宝评价素材整理工具.exe`
+
+> 安装器本身是 PyQt6 写的，`--test <目录>` 可无界面跑完整安装流程，便于 CI / 离线验证。
+
+### 数据落盘位置（重要）
+
+安装后**用户数据保存在安装目录下的 `data/`**（与 `_internal` 运行时目录分离），包含：
+
+- `data/data.json` — 店铺与记录数据
+- `data/images/` — 图片文件
+- `data/screenshots/` — 表单截图归档
+- `data/taobao_chrome_profile/` — Chrome 持久化登录态
+- `data/logs/` — 操作日志
+
+把数据放在 `_internal` 之外，重装 / 修复时不会被覆盖，数据不丢。
+
+### 目标机器注意事项
+
+- **必须安装 Chrome 浏览器**：淘宝登录 / 抓取调用的是系统真实 Chrome（非自带 Chromium），目标机需自备 Chrome 且可被识别
+- 安装程序**不含** Playwright 的 Chromium 内核下载；开发机打包时已就绪，分发到同机直接用即可；若换到未装驱动的环境，需先在目标机执行 `playwright install chromium`
+
+---
+
 ## Git 工作流
 
 ### 双远程配置

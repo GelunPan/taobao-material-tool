@@ -17,3 +17,14 @@ data/
 
 # 本地导出的临时 Excel（导出功能产物不入库）
 *.xlsx
+
+# PyInstaller 构建产物（onedir 应用、安装程序、spec、日志）
+dist/
+build/
+*.spec
+*.log
+# 安装器内嵌的应用压缩包（由 build_installer.py 生成，体积大，不入库）
+installer/payload.zip
+
+# 运行时日志
+app/logs/

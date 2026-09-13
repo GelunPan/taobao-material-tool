@@ -297,10 +297,11 @@ QSplitter::handle:hover {
     background-color: transparent;
 }
 
-/* 用 6px 宽的把手，中间画一条 1px 分隔线，把左右两栏「连」成一条缝，
-   消除原来透明把手造成的空洞观感；悬停时线条变蓝，拖动反馈更直接 */
+/* 把手宽度由代码 setHandleWidth(6) 决定（🔴 QSS 的 width 属性在真实 Windows
+   样式下会改变把手绘制尺寸但不改 handleWidth()，与子部件定位错位会导致点击
+   命中被右栏抢走——缝拖不动的真凶之一；这里只画中间 1px 分隔线，
+   把左右两栏「连」成一条缝，悬停时线条变蓝，拖动反馈更直接 */
 QSplitter::handle:horizontal {
-    width: 6px;
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
         stop:0 transparent, stop:0.46 transparent,
         stop:0.5 #DCDFE6, stop:0.54 transparent, stop:1 transparent);

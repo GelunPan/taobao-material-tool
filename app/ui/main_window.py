@@ -417,9 +417,14 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.shop_stack)
         self.splitter.addWidget(self._build_record_panel())
         self.splitter.setSizes([SHOP_PANEL_DEFAULT_WIDTH, 1150])
-        # 注意：不要用 setHandleWidth(6) 去对齐 style.qss 里 ::handle 的 width:6px——
-        # QSS 已声明把手宽度时代码再设一遍会让 QSS 样式与子部件定位互相干扰
-        # （实测右栏会盖住把手命中区），保持默认即可
+        # 把手宽度只在代码里定一次（style.qss 的 ::handle 不再声明 width）——
+        # QSS width 在真实 Windows 样式下会改把手绘制尺寸但不改 handleWidth()，
+        # 两者不一致时子部件定位与把手错位，点击命中有被右栏抢走的风险（缝拖不动）
+        self.splitter.setHandleWidth(6)
+        # 窗口缩放只伸缩右栏（表单区）：左栏宽度只在「拖缝」时变化。
+        # stretch(0,0) 左栏不参与窗口缩放的空间分配；stretch(1,1) 右栏吃掉全部增量
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
         # 上下限挂在分割器子项（shop_stack）上：分割槽永远被夹在 [73, 330] 内，
         # 「缝」在任何拖拽/窗口缩放下都不可能被扯开（挂在内页上会被绕过）
         self._limit_shop_stack(SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH)
@@ -453,6 +458,18 @@ class MainWindow(QMainWindow):
         if not self._panel_sized:
             self._panel_sized = True
             QTimer.singleShot(0, self._apply_initial_panel_sizes)
+        # 首次启动显示欢迎弹窗（用户勾选不再提醒后跳过）
+        if not getattr(self, '_welcome_shown', False):
+            self._welcome_shown = True
+            from .welcome_dialog import should_show_welcome, WelcomeDialog
+            if should_show_welcome():
+                QTimer.singleShot(100, self._show_welcome_dialog)
+
+    def _show_welcome_dialog(self):
+        """显示启动欢迎弹窗"""
+        from .welcome_dialog import WelcomeDialog
+        dialog = WelcomeDialog(self)
+        dialog.exec()
 
     def _apply_initial_panel_sizes(self) -> None:
         available = self.splitter.width() - self.splitter.handleWidth()

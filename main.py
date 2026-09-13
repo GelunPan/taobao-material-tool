@@ -22,6 +22,9 @@ def load_stylesheet() -> str:
 
 def main():
     app = QApplication(sys.argv)
+    # 应用图标（任务栏/窗口标题栏显示）
+    from PyQt6.QtGui import QIcon
+    app.setWindowIcon(QIcon(str(ASSETS_DIR / "app_icon.png")))
     if STYLE_FILE.exists():
         app.setStyleSheet(load_stylesheet())
     window = MainWindow()

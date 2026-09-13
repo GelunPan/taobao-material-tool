@@ -84,10 +84,13 @@ def create_desktop_shortcut(exe_path: str, work_dir: str) -> str:
     with open(ps_path, "w", encoding="utf-8-sig") as f:
         f.write(script)
     try:
+        # 不捕获输出（DEVNULL）：避免 PowerShell 的 GBK 输出触发 Python 读取线程
+        # 解码异常而导致 subprocess.run 永久挂起（会让安装卡在创建快捷方式）
         subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps_path],
             check=True,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     finally:
         try:
@@ -276,11 +279,22 @@ def main():
     # 自测模式：安装程序.exe --test <目标目录>
     if len(sys.argv) >= 3 and sys.argv[1] == "--test":
         target = sys.argv[2]
-        print("[自测] 安装到：%s" % target)
+
+        # GBK 控制台无法编码 ✅ 等 emoji，自测打印做编码兜底，避免验证过程本身崩
+        def _safe_log(msg):
+            s = str(msg)
+            try:
+                print(s)
+            except UnicodeEncodeError:
+                # 不可编码字符（✅ 等）直接替换为 ? 后输出，绝不二次抛错
+                print(s.encode("gbk", "replace").decode("gbk", "ignore"))
+
+        _safe_log("[自测] 安装到：%s" % target)
         t0 = time.time()
-        res = run_install(target, progress_fn=lambda d, t: print("  进度 %.0f%%" % (d / t * 100)))
-        print("结果：", res)
-        print("耗时 %.1fs" % (time.time() - t0))
+        res = run_install(target, log_fn=_safe_log,
+                          progress_fn=lambda d, t: _safe_log("  进度 %.0f%%" % (d / t * 100)))
+        _safe_log("结果：%s" % res)
+        _safe_log("耗时 %.1fs" % (time.time() - t0))
         return
 
     app = QApplication(sys.argv)

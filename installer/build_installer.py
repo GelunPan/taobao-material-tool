@@ -43,7 +43,7 @@ def build_installer_exe():
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name", out_name,
-        "--windowed", "--onedir",
+        "--windowed", "--onefile",
         "--add-data", "%s:." % PAYLOAD,
         "--add-data", os.path.join(ROOT, "app", "assets", "logo.png") + ":app/assets",
         "--noconfirm",
@@ -51,7 +51,7 @@ def build_installer_exe():
     ]
     print("构建安装程序：", " ".join(cmd))
     subprocess.run(cmd, cwd=ROOT, check=True)
-    exe = os.path.join(ROOT, "dist", out_name, out_name + ".exe")
+    exe = os.path.join(ROOT, "dist", out_name + ".exe")
     print("安装程序已生成：", exe, "%.1f MB" % (os.path.getsize(exe) / 1e6 if os.path.isfile(exe) else 0))
     return exe
 

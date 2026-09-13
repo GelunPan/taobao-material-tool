@@ -179,8 +179,8 @@ python main.py
 python installer/build_installer.py
 ```
 
-产物：`dist/淘宝评价素材整理工具安装程序/淘宝评价素材整理工具安装程序.exe`
-（单文件安装程序，约 580MB——内含完整应用；安装后占用相近，因内置 Qt WebEngine 与 Playwright 的 Chromium 驱动无法再压缩）
+产物：`dist/淘宝评价素材整理工具安装程序.exe`
+（**单个 exe 安装程序**，约 270MB——PyInstaller 把完整应用压缩内嵌，双击即运行，无需附带任何文件夹；首次启动会自解压到临时目录，属一次性开销）
 
 ### 安装程序工作流
 

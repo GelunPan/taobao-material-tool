@@ -20,6 +20,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from .. import config
 from ..utils.logger import get_logger
 from . import taobao_session
+from .link_utils import extract_product_url
 
 logger = get_logger("taobao.pw")
 
@@ -502,8 +503,10 @@ def fetch_item(url: str, cookie_file: Path = None, save_dir: Path = None,
                wait_ms: int = 8000, headless: bool = True) -> dict:
     """单条抓取：启动一次 Chrome，暖身后进商品页提取标题、价格、主图、规格。
 
-    url: 商品完整链接（支持 e.tb.cn 短链接，自动跟随跳转）。阻塞调用，应放工作线程。
+    url: 商品完整链接（支持 e.tb.cn 短链接，自动跟随跳转；也兼容整段【淘宝】
+         分享口令，入口处先识别出纯链接）。阻塞调用，应放工作线程。
     """
+    url = extract_product_url(url)
     result = _new_result(url)
     try:
         with sync_playwright() as p:
@@ -567,6 +570,7 @@ def fetch_items(urls: list, on_item_done=None, on_item_start=None,
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             _warmup(page)
             for i, url in enumerate(urls):
+                url = extract_product_url(url)  # 兼容整段【淘宝】分享口令
                 _safe_call(on_item_start, i, url)
                 res = _visit_and_extract(page, url)
                 results[i] = res

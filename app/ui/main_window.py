@@ -47,6 +47,7 @@ from ..services import (
     taobao_session,
 )
 from ..services.taobao_client import TaobaoClient
+from ..services.link_utils import extract_product_url
 from ..services.history import UndoStack, snapshot
 from ..storage import DataLoadError, ShopRepository
 from ..utils.logger import get_logger
@@ -416,6 +417,9 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.shop_stack)
         self.splitter.addWidget(self._build_record_panel())
         self.splitter.setSizes([SHOP_PANEL_DEFAULT_WIDTH, 1150])
+        # 注意：不要用 setHandleWidth(6) 去对齐 style.qss 里 ::handle 的 width:6px——
+        # QSS 已声明把手宽度时代码再设一遍会让 QSS 样式与子部件定位互相干扰
+        # （实测右栏会盖住把手命中区），保持默认即可
         # 上下限挂在分割器子项（shop_stack）上：分割槽永远被夹在 [73, 330] 内，
         # 「缝」在任何拖拽/窗口缩放下都不可能被扯开（挂在内页上会被绕过）
         self._limit_shop_stack(SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH)
@@ -442,14 +446,19 @@ class MainWindow(QMainWindow):
             self._global_loading.setGeometry(self.centralWidget().rect())
 
     def showEvent(self, event):
-        # 首帧显示时按分割器实际可用宽度精确设定左栏宽度（避免按比例缩放产生偏差）
+        # 首帧显示时按分割器实际可用宽度精确设定左栏宽度（避免按比例缩放产生偏差）。
+        # 延迟一拍再设定：showEvent 阶段布局可能尚未跑完，splitter 还是小尺寸，
+        # 此时 setSizes 会被等比压扁、左栏开局就卡在最小宽度上（缝拖不动的帮凶）
         super().showEvent(event)
         if not self._panel_sized:
             self._panel_sized = True
-            available = self.splitter.width() - self.splitter.handleWidth()
-            self.splitter.setSizes(
-                [SHOP_PANEL_DEFAULT_WIDTH, max(0, available - SHOP_PANEL_DEFAULT_WIDTH)]
-            )
+            QTimer.singleShot(0, self._apply_initial_panel_sizes)
+
+    def _apply_initial_panel_sizes(self) -> None:
+        available = self.splitter.width() - self.splitter.handleWidth()
+        self.splitter.setSizes(
+            [SHOP_PANEL_DEFAULT_WIDTH, max(0, available - SHOP_PANEL_DEFAULT_WIDTH)]
+        )
 
     def _build_shop_panel(self):
         """左侧：店铺列表面板（店铺 -> 产品分类 -> 素材）"""
@@ -659,6 +668,10 @@ class MainWindow(QMainWindow):
 
         tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；Ctrl+A 全选记录；右键删除/复制选中的记录；Ctrl+Z 撤销上一步；图片格双击查看大图、Ctrl+C 复制、Del 删除、Ctrl+V 粘贴；右键更多操作")
         tip_label.setObjectName("tip")
+        # 关键修复：这行提示很长，QLabel 不换行时 minimumSizeHint = 整行文字宽度（≈1356px），
+        # 会把右栏最小宽度撑爆 → QSplitter 认为右栏不能再收窄 → 左栏被钉死、缝往右拖不动。
+        # 开启自动换行后最小宽度提示降到 ≈72px，缝恢复全区间可拖。
+        tip_label.setWordWrap(True)
         right_layout.addWidget(tip_label)
 
         # 底部操作栏
@@ -1540,7 +1553,8 @@ class MainWindow(QMainWindow):
     # ==================== 链接栏右键：抓取/填充 ====================
     def on_link_fetch(self, row: int, url: str):
         """链接栏右键：抓取此链接，成功后提示抓取到多少张图"""
-        if not url or not url.strip():
+        url = extract_product_url(url or "")  # 兼容历史脏数据：可能存的是整段分享口令
+        if not url:
             QMessageBox.information(self, "提示", "该记录没有商品链接")
             return
         if not self.taobao.is_logged_in():
@@ -1552,7 +1566,7 @@ class MainWindow(QMainWindow):
         self._global_loading.raise_()
 
         self._link_fetch_thread = QThread()
-        self._link_fetch_worker = _LinkFetchWorker(url.strip())
+        self._link_fetch_worker = _LinkFetchWorker(url)
         self._link_fetch_worker.moveToThread(self._link_fetch_thread)
         self._link_fetch_thread.started.connect(self._link_fetch_worker.run)
         self._link_fetch_worker.done.connect(lambda res, r=row: self._on_link_fetch_done(res, r))
@@ -1583,7 +1597,8 @@ class MainWindow(QMainWindow):
 
     def on_link_fill(self, row: int, url: str):
         """链接栏右键：抓取并填充到此行"""
-        if not url or not url.strip():
+        url = extract_product_url(url or "")  # 兼容历史脏数据：可能存的是整段分享口令
+        if not url:
             QMessageBox.information(self, "提示", "该记录没有商品链接")
             return
         if not self.taobao.is_logged_in():
@@ -1598,7 +1613,7 @@ class MainWindow(QMainWindow):
         self._global_loading.raise_()
 
         self._link_fill_thread = QThread()
-        self._link_fill_worker = _LinkFetchWorker(url.strip())
+        self._link_fill_worker = _LinkFetchWorker(url)
         self._link_fill_worker.moveToThread(self._link_fill_thread)
         self._link_fill_thread.started.connect(self._link_fill_worker.run)
         self._link_fill_worker.done.connect(lambda res, r=row: self._on_link_fill_done(res, r))
@@ -1688,7 +1703,8 @@ class MainWindow(QMainWindow):
         tasks = []
         skipped = 0
         for idx, record in enumerate(records):
-            url = (record.get("product_url") or "").strip()
+            # 兼容历史脏数据：单元格里可能存着整段【淘宝】分享口令，识别出纯链接再入队
+            url = extract_product_url(record.get("product_url") or "")
             if not url:
                 continue
             if record.get("title") and record.get("link_image"):

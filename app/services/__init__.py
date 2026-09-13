@@ -12,6 +12,7 @@ from PyQt6.QtGui import QImage
 from ..config import (
     EXPORT_FREEZE_ROW,
     EXPORT_HEADER_HEIGHT,
+    EXPORT_IMAGE_DISPLAY_SCALE,
     EXPORT_IMAGE_MAX_COUNT,
     EXPORT_IMAGE_MAX_HEIGHT_PX,
     EXPORT_IMAGE_MAX_WIDTH_PX,
@@ -386,8 +387,10 @@ class ExcelExporter:
 
         规则（都受 Excel 自身的硬上限约束）：
         - 嵌入原图文件本身，不重编码；显示尺寸保持**原始宽高比**（之前 pad 成正方形是错的）
-        - 单张显示高度封顶 EXPORT_IMAGE_MAX_HEIGHT_PX（再高 Excel 行高放不下）
-        - 整列并排总宽封顶 EXPORT_IMAGE_MAX_WIDTH_PX（Excel 列宽上限 255 字符），
+        - 显示尺寸 = 原图 × EXPORT_IMAGE_DISPLAY_SCALE（1/8，v0.6 起默认，此前按原尺寸显示太大）
+        - 单张显示高度硬上限 EXPORT_IMAGE_MAX_HEIGHT_PX（1/8 后仍超高的巨图兜底，
+          Excel 行高上限 409.5pt ≈ 546px 放不下）
+        - 整列并排总宽硬上限 EXPORT_IMAGE_MAX_WIDTH_PX（Excel 列宽上限 255 字符），
           超了就整列等比再缩小，保证同一列的图大小一致
         """
         sizes: dict[str, tuple[int, int]] = {}      # 路径 -> 原始像素尺寸
@@ -420,9 +423,13 @@ class ExcelExporter:
                     w0, h0 = original_size(path)
                     if not w0 or not h0:
                         continue
-                    scale = min(1.0, EXPORT_IMAGE_MAX_HEIGHT_PX / h0)
-                    w, h = round(w0 * scale), round(h0 * scale)
-                    sizes[path] = (w, h)      # 记下"高度封顶后"的尺寸，供嵌入时直接用
+                    # 显示尺寸 = 原图 × 1/8；超高巨图再受高度硬上限兜底
+                    # （注意不能"先封顶再乘 1/8"，那会把巨图压得过小）
+                    w, h = round(w0 * EXPORT_IMAGE_DISPLAY_SCALE), round(h0 * EXPORT_IMAGE_DISPLAY_SCALE)
+                    if h > EXPORT_IMAGE_MAX_HEIGHT_PX:
+                        k = EXPORT_IMAGE_MAX_HEIGHT_PX / h
+                        w, h = round(w * k), round(h * k)
+                    sizes[path] = (w, h)      # 记下最终显示尺寸，供嵌入时直接用
                     total += w + 4            # 4px 为图与图之间的留白
                     row_h = max(row_h, h)
                 max_w = max(max_w, total)

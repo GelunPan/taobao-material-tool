@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..config import DIALOG_MULTI_SIZE, DIALOG_THUMB_SIZE
+from ..services.link_utils import extract_product_url
 from .image_utils import scaled_pixmap
 
 IMAGE_FILTER = "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif)"
@@ -215,7 +216,9 @@ class AddRecordDialog(QDialog):
         self.title_input = QLineEdit()
         self.helper_input = QLineEdit()
         self.product_url_input = QLineEdit()
-        self.product_url_input.setPlaceholderText("https://item.taobao.com/...")
+        self.product_url_input.setPlaceholderText(
+            "https://item.taobao.com/... 或直接粘贴【淘宝】分享口令，自动识别链接"
+        )
         self.review_input = QTextEdit()
         self.review_input.setMaximumHeight(96)
 
@@ -299,5 +302,6 @@ class AddRecordDialog(QDialog):
             "helper": self.helper_input.text().strip(),
             "review": self.review_input.toPlainText().strip(),
             "image_paths": self.review_picker.paths,
-            "product_url": self.product_url_input.text().strip(),
+            # 粘贴的是整段【淘宝】分享口令时，只保留识别出的链接落库
+            "product_url": extract_product_url(self.product_url_input.text()),
         }

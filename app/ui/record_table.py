@@ -83,6 +83,7 @@ from ..config import (
 )
 from .flow_layout import FlowLayout
 from .image_utils import scaled_pixmap
+from ..services.link_utils import extract_product_url
 
 # 可见区上下各预加载的行数（提前解码，滚动更顺滑）
 _PRELOAD_ROWS = 8
@@ -1283,7 +1284,22 @@ class RecordTable(QTableWidget):
         if field in IMAGE_FIELDS:
             return  # 图片列底层无文本，不会走到
         item = self.item(row, col)
-        self.cell_edited.emit(row, field, "" if item is None else item.text())
+        text = "" if item is None else item.text()
+        if field == "product_url" and text:
+            cleaned = extract_product_url(text)
+            if cleaned != text:
+                if item is not None:
+                    # 把识别出的纯链接回填到单元格，显示与落库一致；
+                    # _url_cleaning 防重入：setText 会再次触发本槽，第二遍直接放行
+                    self._url_cleaning = True
+                    try:
+                        item.setText(cleaned)
+                    finally:
+                        self._url_cleaning = False
+                text = cleaned
+        if getattr(self, "_url_cleaning", False):
+            return  # 回填引起的那次信号不再重复落库
+        self.cell_edited.emit(row, field, text)
 
     # ---------- 行高自适应 ----------
     def _row_needed_height(self, row: int) -> int:

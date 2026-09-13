@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 
 from .. import config
 from ..services import taobao_playwright
+from ..services.link_utils import extract_product_url
 from ..utils.logger import get_logger
 
 logger = get_logger("taobao.fetch")
@@ -131,7 +132,9 @@ class TaobaoFetchDialog(QDialog):
 
         row = QHBoxLayout()
         self.input = QLineEdit()
-        self.input.setPlaceholderText("粘贴淘宝商品链接，例如 https://item.taobao.com/item.htm?id=...")
+        self.input.setPlaceholderText(
+            "粘贴淘宝商品链接或【淘宝】分享口令，例如 https://item.taobao.com/item.htm?id=..."
+        )
         self.btn = QPushButton("抓取")
         self.btn.setStyleSheet(
             "QPushButton { background: #409EFF; color: white; border: none; "
@@ -197,7 +200,10 @@ class TaobaoFetchDialog(QDialog):
         self.loading_overlay.setGeometry(self.rect())
 
     def _start(self):
-        url = self.input.text().strip()
+        url = extract_product_url(self.input.text())
+        if url != self.input.text().strip():
+            # 粘贴的是整段分享口令：把识别出的链接回填到输入框，所见即所得
+            self.input.setText(url)
         if not url:
             QMessageBox.information(self, "提示", "请先粘贴商品链接")
             return

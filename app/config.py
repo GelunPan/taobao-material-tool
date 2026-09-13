@@ -105,8 +105,9 @@ EXPORT_FREEZE_ROW = 3           # 冻结前两行（店铺名 + 表头），滚�
 EXPORT_IMAGE_MAX_COUNT = 6      # 每格最多并排几张：再多整列会被撑爆
 EXPORT_PX_PER_CHAR = 7          # Excel 列宽单位换算：1 字符 ≈ 7px
 EXPORT_PX_TO_PT = 0.75          # Excel 行高单位换算：1px = 0.75pt
-EXPORT_IMAGE_MAX_HEIGHT_PX = 533   # 单张图显示高度上限（Excel 行高上限 409.5pt ≈ 546px）
-EXPORT_IMAGE_MAX_WIDTH_PX = 1785   # 图片列总宽上限（Excel 列宽上限 255 字符 ≈ 1785px）
+EXPORT_IMAGE_DISPLAY_SCALE = 0.125  # 显示尺寸 = 原图 × 1/8（此前按原始尺寸显示太大）
+EXPORT_IMAGE_MAX_HEIGHT_PX = 533   # 单张显示高度硬上限（1/8 后仍超高的巨图兜底，行高上限 409.5pt ≈ 546px）
+EXPORT_IMAGE_MAX_WIDTH_PX = 1785   # 图片列总宽硬上限（Excel 列宽上限 255 字符 ≈ 1785px）
 EXPORT_IMAGE_EMPTY_COL_WIDTH = 10  # 该列一条图都没有时的窄列宽
 
 # ---------- 淘宝导入 ----------

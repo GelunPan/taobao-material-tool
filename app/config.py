@@ -24,7 +24,7 @@ SCREENSHOTS_DIR = DATA_DIR / "screenshots"   # 表单截图历史目录（一键
 ASSETS_DIR = BASE_DIR / "app" / "assets"   # 界面图标素材（复选框三态等）
 
 # ---------- 应用 ----------
-APP_TITLE = "淘宝评价素材整理工具"
+APP_TITLE = "淘宝评价工具"
 APP_VERSION = "1.0.0"
 APP_VERSION_NAME = "v1.0 正式版"
 

@@ -1,4 +1,4 @@
-"""淘宝评价素材整理工具 - 程序入口"""
+"""淘宝评价工具 - 程序入口"""
 import sys
 from pathlib import Path
 

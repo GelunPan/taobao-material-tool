@@ -16,7 +16,7 @@ import shutil
 import subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APP_NAME = "淘宝评价素材整理工具"
+APP_NAME = "淘宝评价工具"
 DIST_APP = os.path.join(ROOT, "dist", APP_NAME)
 PAYLOAD = os.path.join(ROOT, "installer", "payload.zip")
 INSTALLER_SRC = os.path.join(ROOT, "installer", "installer.py")
@@ -50,10 +50,11 @@ def build_installer_exe():
         sys.executable, "-m", "PyInstaller",
         "--name", out_name,
         "--windowed", "--onefile",
+        "--icon", os.path.join(ROOT, "app", "assets", "app_icon.png"),
         "--distpath", tmp,
         "--workpath", tmp,
         "--add-data", "%s:." % PAYLOAD,
-        "--add-data", os.path.join(ROOT, "app", "assets", "logo.png") + ":app/assets",
+        "--add-data", os.path.join(ROOT, "app", "assets", "app_icon.png") + ":app/assets",
         "--noconfirm",
         INSTALLER_SRC,
     ]

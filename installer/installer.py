@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""淘宝评价素材整理工具 —— 极简安装向导（PyQt6 版）。
+"""淘宝评价工具 —— 极简安装向导（PyQt6 版）。
 
 流程：选择安装位置 -> 点击安装 -> 在安装目录释放程序 + 在桌面创建快捷方式。
 内置无界面自测模式：``安装程序.exe --test <目标目录>`` 直接跑完整安装流程并退出，
@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QIcon
 
-APP_NAME = "淘宝评价素材整理工具"
+APP_NAME = "淘宝评价工具"
 EXE_NAME = APP_NAME + ".exe"
 
 
@@ -73,14 +73,16 @@ def create_desktop_shortcut(exe_path: str, work_dir: str) -> str:
     lnk = os.path.join(desktop_path(), APP_NAME + ".lnk")
     ps_path = os.path.join(tempfile.gettempdir(), "wb_make_shortcut_%s.ps1" % os.getpid())
     # utf-8-sig 写 BOM，确保 PowerShell 正确识别中文路径
+    icon_path = exe_path  # 快捷方式图标直接用主程序 exe 的图标
     script = (
         '$ws = New-Object -ComObject WScript.Shell\n'
         '$s = $ws.CreateShortcut("%s")\n'
         '$s.TargetPath = "%s"\n'
         '$s.WorkingDirectory = "%s"\n'
         '$s.Description = "%s"\n'
+        '$s.IconLocation = "%s,0"\n'
         '$s.Save()\n'
-    ) % (lnk, exe_path, work_dir, APP_NAME)
+    ) % (lnk, exe_path, work_dir, APP_NAME, icon_path)
     with open(ps_path, "w", encoding="utf-8-sig") as f:
         f.write(script)
     try:
@@ -270,6 +272,8 @@ class InstallerWindow(QWidget):
             box.exec()
             if box.clickedButton() == open_btn:
                 os.startfile(res["install_dir"])
+            # 安装完成后自动关闭安装向导窗口
+            self.close()
         else:
             self._set_status("安装失败 ❌")
             QMessageBox.critical(self, "安装失败", res.get("error") or "未知错误")

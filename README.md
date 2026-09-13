@@ -1,4 +1,4 @@
-# 淘宝评价素材整理工具
+# 淘宝评价工具
 
 > 版本：**v1.0 正式版** · 本地离线桌面工具
 
@@ -170,6 +170,37 @@ python main.py
 - **本机 Python 环境**：已安装 `PyInstaller`、项目依赖（`PyQt6`、`PyQt6-WebEngine`、`playwright` 等），且与 `requirements.txt` 一致
 - 打包机已执行过 `playwright install chromium`（淘宝模块依赖的浏览器驱动）
 
+### 🔧 推荐：使用专用打包虚拟环境（避免系统 Python 污染，结果可复现）
+
+项目已预置一个干净的打包虚拟环境，只包含项目真正需要的依赖，确保打包结果一致、不会把系统里无关的包打进去。
+
+```bash
+# 虚拟环境路径（已创建好，直接用）
+D:\tools\python\envs\taobao-build
+
+# 用虚拟环境的 Python 一键打包（约 3.5 分钟）
+D:\tools\python\envs\taobao-build\Scripts\python.exe installer\build_all.py
+```
+
+如果需要从头重建这个虚拟环境（换机器 / 环境损坏时）：
+
+```bash
+# 1. 创建虚拟环境
+python -m venv D:\tools\python\envs\taobao-build
+
+# 2. 安装项目依赖 + PyInstaller
+D:\tools\python\envs\taobao-build\Scripts\python.exe -m pip install PyQt6 PyQt6-WebEngine openpyxl Pillow requests playwright pyinstaller
+
+# 3. 打包
+D:\tools\python\envs\taobao-build\Scripts\python.exe installer\build_all.py
+```
+
+> **为什么用虚拟环境打包？**
+> - 确保只打包项目真正需要的依赖，不会把系统 Python 里的杂包打进去
+> - 打包结果可复现，换机器 / 换时间打包结果一致
+> - 不会因为系统 Python 升级 / 安装新包而影响打包结果
+> - 本项目体积主要由 PyQt6 + WebEngine（~300MB）+ playwright driver（~50MB）决定，虚拟环境不会显著减小体积，但能保证干净可复现
+
 ### 一键打包
 
 ```bash
@@ -179,14 +210,14 @@ python main.py
 python installer/build_all.py
 ```
 
-产物：`dist/淘宝评价素材整理工具安装程序.exe`
+产物：`dist/淘宝评价工具安装程序.exe`
 （**单个 exe 安装程序**，约 270MB——PyInstaller 把完整应用压缩内嵌，双击即运行，无需附带任何文件夹；首次启动会自解压到临时目录，属一次性开销）
 
 ### 安装程序工作流
 
-1. **选择安装位置**：默认装到用户可写目录 `%LOCALAPPDATA%\淘宝评价素材整理工具`，也可点「浏览…」自选（避开 `C:\Program Files` 的写权限坑）
+1. **选择安装位置**：默认装到用户可写目录 `%LOCALAPPDATA%\淘宝评价工具`，也可点「浏览…」自选（避开 `C:\Program Files` 的写权限坑）
 2. **点击安装**：把内嵌的完整应用解压到所选目录，约 30~60 秒
-3. **桌面快捷方式**：自动在桌面生成 `淘宝评价素材整理工具.lnk`，指向安装目录里的 `淘宝评价素材整理工具.exe`
+3. **桌面快捷方式**：自动在桌面生成 `淘宝评价工具.lnk`，指向安装目录里的 `淘宝评价工具.exe`
 
 > 安装器本身是 PyQt6 写的，`--test <目录>` 可无界面跑完整安装流程，便于 CI / 离线验证。
 
@@ -241,7 +272,7 @@ Windows 对目录 `open()` 报 **Permission denied**——报错信息完全看�
 Windows 会锁定「正在运行」的 exe 文件。若之前跑过 `--test` 或安装器且**进程没退出**
 （它在后台能挂十几分钟），重建时覆盖 `dist/...安装程序.exe` 就会 Permission denied。
 
-排查：结束残留的 `淘宝评价素材整理工具安装程序.exe` 进程后再重建。
+排查：结束残留的 `淘宝评价工具安装程序.exe` 进程后再重建。
 
 #### 坑 4：GBK 控制台编码
 
@@ -253,7 +284,7 @@ Windows 会锁定「正在运行」的 exe 文件。若之前跑过 `--test` 或
 
 ```bash
 # 无界面跑完整安装流程（解压 + 桌面快捷方式），验证产物是否可用
-dist/淘宝评价素材整理工具安装程序.exe --test D:/tmp_test_install
+dist/淘宝评价工具安装程序.exe --test D:/tmp_test_install
 ```
 
 重点确认：`_internal/app/style.qss` 是**文件**而不是目录（坑 1 的直接验证点）。

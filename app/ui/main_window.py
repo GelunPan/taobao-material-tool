@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 
 from PyQt6.QtCore import (
-    QRect, Qt, QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, QTimer, pyqtProperty,
+    QRect, Qt, QEasingCurve, QObject, QPropertyAnimation, QSize, QTimer, pyqtProperty,
     pyqtSignal, QVariantAnimation, QThread,
 )
 from PyQt6.QtWidgets import QAbstractItemView
@@ -28,7 +28,6 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QSplitter,
     QStackedWidget,
     QToolTip,
     QTreeWidget,
@@ -67,10 +66,7 @@ SHOP_PANEL_DEFAULT_WIDTH = 200   # 展开时的默认宽度（也是首次展开
 SHOP_PANEL_MIN_WIDTH = 73        # 拖动下限 ≈ 原上限 220 的 1/3，避免被拉没
 SHOP_RAIL_WIDTH = 38             # 收起后保留的窄轨宽度（放置展开按钮）
 PANEL_ANIM_DURATION = 220        # 折叠/展开过渡时长（毫秒），InOutCubic 缓动
-PANEL_COLLAPSE_THRESHOLD = 50   # 拖动松手时左栏窄于该宽度才自动收起；
-                                  # 须小于 SHOP_PANEL_MIN_WIDTH(73)，否则拖到下限会被误收起，
-                                  # 与「下限防止完全缩小」冲突；完整收起仍走「收起」按钮
-PANEL_EXPAND_SWITCH_THRESHOLD = 120  # 折叠态拖拽时，窄轨宽超过该值才切出完整面板（先宽后显）
+PANEL_EXPAND_SWITCH_THRESHOLD = 120  # 折叠态拖缝时，窄轨宽超过该值才切出完整面板（先宽后显）
 
 
 class _LinkFetchWorker(QObject):
@@ -164,36 +160,6 @@ class _LoadingOverlay(QWidget):
 
     def hide_overlay(self):
         self.hide()
-
-
-class SplitterWidthAnimator(QObject):
-    """动画属性桥：把 QSplitter 某个子部件的宽度包装成可插值的 Qt 属性。
-
-    QPropertyAnimation 每帧设置 panelWidth，setter 内同步 setSizes，
-    剩余宽度全部分给另一侧，实现分栏宽度的平滑过渡。
-    """
-
-    def __init__(self, splitter: QSplitter, index: int, parent=None):
-        super().__init__(parent)
-        self._splitter = splitter
-        self._index = index
-        self._width = 0
-
-    def _get_width(self) -> int:
-        return self._width
-
-    def _set_width(self, value) -> None:
-        self._width = int(value)
-        sizes = self._splitter.sizes()
-        total = sum(sizes)
-        sizes[self._index] = self._width
-        rest = max(0, total - self._width)
-        for i in range(len(sizes)):
-            if i != self._index:
-                sizes[i] = rest
-        self._splitter.setSizes(sizes)
-
-    panelWidth = pyqtProperty(int, fget=_get_width, fset=_set_width)
 
 
 class SortableShopTree(QTreeWidget):
@@ -351,13 +317,72 @@ class SortableShopTree(QTreeWidget):
 class CollapsibleStack(QStackedWidget):
     """分栏折叠容器：最小尺寸提示归零。
 
-    QSplitter 默认按子部件 minimumSizeHint 限制可收窄的下限，
-    QStackedWidget 会取所有页面（含完整店铺面板）的最小提示，导致无法
-    收到窄轨宽度；这里统一返回 0，宽度完全交给 QSplitter/动画控制。
+    左栏宽度由 setFixedWidth 直接钉死（拖缝/折叠动画是唯一入口），布局不会
+    按内容 minimumSizeHint 反推宽度；这里归零只是双保险，保证页面在
+    「完整面板 ⇄ 窄轨」切换瞬间也不会被内容撑开。
     """
 
     def minimumSizeHint(self) -> QSize:
         return QSize(0, 0)
+
+
+class _SplitBar(QWidget):
+    """左栏与表单区之间的拖动缝：拖动只改左栏宽度，右栏被动跟随。
+
+    - 往右拖 = 左栏变宽，右侧表单整体被向右推开（宽度 = 窗口剩余空间）
+    - 往左拖 = 左栏收窄
+    - 不用 QSplitter：命中区就是这 6px 本身，悬停/按住变蓝给出可拖提示
+    """
+
+    drag_started = pyqtSignal()      # 鼠标按下（开始一次拖拽会话）
+    drag_moved = pyqtSignal(int)     # 相对按下点的总水平位移（px，右拖为正）
+    drag_finished = pyqtSignal()     # 鼠标松开
+
+    BAR_WIDTH = 6  # 缝宽：与旧 QSplitter handleWidth 一致，视觉不变
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(self.BAR_WIDTH)
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        self._hover = False
+        self._pressed = False
+        self._press_x = 0.0
+
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, event):
+        """画中间 1px 分隔线：默认灰，悬停/按住时变蓝（与旧把手视觉一致）"""
+        painter = QPainter(self)
+        color = QColor("#A0CFFF") if (self._hover or self._pressed) else QColor("#DCDFE6")
+        painter.fillRect((self.width() - 1) // 2, 0, 1, self.height(), color)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = True
+            self._press_x = event.globalPosition().x()
+            self.update()
+            self.drag_started.emit()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._pressed:
+            return
+        # 发送相对按下点的总位移（非增量）：float 只在最后取整一次，无累积误差
+        self.drag_moved.emit(int(round(event.globalPosition().x() - self._press_x)))
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._pressed:
+            self._pressed = False
+            self.update()
+            self.drag_finished.emit()
+            event.accept()
 
 
 class MainWindow(QMainWindow):
@@ -376,9 +401,8 @@ class MainWindow(QMainWindow):
         # 左侧栏折叠状态与展开宽度记忆
         self._shop_collapsed = False
         self._shop_expanded_width = SHOP_PANEL_DEFAULT_WIDTH
-        self._panel_sized = False  # 首帧显示后再精确设定初始栏宽
-        self._user_dragging = False  # 用户是否正在拖动分割条
-        self._panel_switched_during_drag = False  # 本次拖拽中是否已从窄轨切到完整面板
+        self._panel_animating = False  # 折叠/展开动画进行中（期间忽略拖缝）
+        self._drag_base_width = None   # 本次拖缝按下时刻的左栏宽度（位移基准）
         # 一键导入后台线程（运行中禁止重复触发）
         self._batch_import_thread = None
         self._batch_import_worker = None
@@ -404,42 +428,31 @@ class MainWindow(QMainWindow):
         if logo.exists():
             self.setWindowIcon(QIcon(str(logo)))
         main_layout = QHBoxLayout(central_widget)
+        main_layout.setSpacing(0)  # 左中右之间不留间隙，缝宽 = 拖动条本身的 6px
 
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(self.splitter)
-
-        # 左侧用 QStackedWidget 承载“完整面板 / 收起窄轨”两个页面，
-        # 宽度由 QSplitter 动画驱动，页面在动画起止时切换
+        # 左侧用 QStackedWidget 承载“完整面板 / 收起窄轨”两个页面。
+        # 不再用 QSplitter：左栏宽度固定，只有拖中间缝（或折叠/展开动画）会改它，
+        # 窗口缩放的全部增量都归右栏——天然满足「拉动边框不影响隔壁板块宽度」
         self.shop_stack = CollapsibleStack()
-        self.shop_stack.setMinimumWidth(0)
         self.shop_stack.addWidget(self._build_shop_panel())      # index 0：完整面板
         self.shop_stack.addWidget(self._build_collapsed_rail())  # index 1：收起窄轨
-        self.splitter.addWidget(self.shop_stack)
-        self.splitter.addWidget(self._build_record_panel())
-        self.splitter.setSizes([SHOP_PANEL_DEFAULT_WIDTH, 1150])
-        # 把手宽度只在代码里定一次（style.qss 的 ::handle 不再声明 width）——
-        # QSS width 在真实 Windows 样式下会改把手绘制尺寸但不改 handleWidth()，
-        # 两者不一致时子部件定位与把手错位，点击命中有被右栏抢走的风险（缝拖不动）
-        self.splitter.setHandleWidth(6)
-        # 窗口缩放只伸缩右栏（表单区）：左栏宽度只在「拖缝」时变化。
-        # stretch(0,0) 左栏不参与窗口缩放的空间分配；stretch(1,1) 右栏吃掉全部增量
-        self.splitter.setStretchFactor(0, 0)
-        self.splitter.setStretchFactor(1, 1)
-        # 上下限挂在分割器子项（shop_stack）上：分割槽永远被夹在 [73, 330] 内，
-        # 「缝」在任何拖拽/窗口缩放下都不可能被扯开（挂在内页上会被绕过）
-        self._limit_shop_stack(SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH)
+        self.shop_stack.setFixedWidth(SHOP_PANEL_DEFAULT_WIDTH)
+        main_layout.addWidget(self.shop_stack)
 
-        # 折叠/展开过渡动画（InOutCubic 起止柔和、中间流畅）
-        self._panel_animator = SplitterWidthAnimator(self.splitter, 0, self)
-        self.panel_animation = QPropertyAnimation(self._panel_animator, b"panelWidth", self)
+        # 中间拖动缝：往右拖 = 左栏变宽（右侧表单整体被向右推开），往左拖 = 左栏收窄
+        self._split_bar = _SplitBar()
+        self._split_bar.drag_started.connect(self._on_split_drag_started)
+        self._split_bar.drag_moved.connect(self._on_split_drag_moved)
+        self._split_bar.drag_finished.connect(self._on_split_drag_finished)
+        main_layout.addWidget(self._split_bar)
+
+        # 右侧表单区：stretch=1，吸收窗口缩放与拖缝让出的全部剩余空间
+        main_layout.addWidget(self._build_record_panel(), 1)
+
+        # 折叠/展开过渡动画（InOutCubic 起止柔和、中间流畅）：逐帧改左栏固定宽度
+        self.panel_animation = QPropertyAnimation(self, b"shopPanelWidth", self)
         self.panel_animation.setDuration(PANEL_ANIM_DURATION)
         self.panel_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        # 拖动左栏右边缘：窄于阈值松手自动收起；收起态向外拖出自动展开
-        # QSplitterHandle 没有按压信号，用事件过滤器捕获鼠标按下/松开
-        self._split_handle = self.splitter.handle(1)
-        self._split_handle.installEventFilter(self)
-        # 拖拽过程中实时监听宽度：折叠态拖过阈值才切出完整面板（先宽后显，与收起相反）
-        self.splitter.splitterMoved.connect(self._on_splitter_dragging)
 
         # 全局加载动画覆盖层（链接栏抓取/填充时显示）
         self._global_loading = _LoadingOverlay(self.centralWidget())
@@ -451,13 +464,8 @@ class MainWindow(QMainWindow):
             self._global_loading.setGeometry(self.centralWidget().rect())
 
     def showEvent(self, event):
-        # 首帧显示时按分割器实际可用宽度精确设定左栏宽度（避免按比例缩放产生偏差）。
-        # 延迟一拍再设定：showEvent 阶段布局可能尚未跑完，splitter 还是小尺寸，
-        # 此时 setSizes 会被等比压扁、左栏开局就卡在最小宽度上（缝拖不动的帮凶）
         super().showEvent(event)
-        if not self._panel_sized:
-            self._panel_sized = True
-            QTimer.singleShot(0, self._apply_initial_panel_sizes)
+        # 左栏宽度开局就由 setFixedWidth 钉死，无需首帧后再补偿初始栏宽
         # 首次启动显示欢迎弹窗（用户勾选不再提醒后跳过）
         if not getattr(self, '_welcome_shown', False):
             self._welcome_shown = True
@@ -471,23 +479,16 @@ class MainWindow(QMainWindow):
         dialog = WelcomeDialog(self)
         dialog.exec()
 
-    def _apply_initial_panel_sizes(self) -> None:
-        available = self.splitter.width() - self.splitter.handleWidth()
-        self.splitter.setSizes(
-            [SHOP_PANEL_DEFAULT_WIDTH, max(0, available - SHOP_PANEL_DEFAULT_WIDTH)]
-        )
-
     def _build_shop_panel(self):
         """左侧：店铺列表面板（店铺 -> 产品分类 -> 素材）"""
         left_widget = QWidget()
         left_widget.setObjectName("panel")
-        # 宽度上下限不在这里设：QSplitter 的直接子项是 shop_stack，约束必须挂在它身上，
-        # 挂在内页上分割槽仍能被拖出上限 → 内页卡在 max 不动，「缝」就被扯开（v0.5 修复）
+        # 宽度约束不在这里设：左栏宽度统一由 shop_stack.setFixedWidth 控制（拖缝/动画唯一入口）
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(8)
 
-        # 标题行：标题 + 树展开折叠 + 侧栏收起按钮
+        # 标题行：标题 + 树展开折叠按钮
         title_row = QHBoxLayout()
         left_label = QLabel("店铺列表")
         left_label.setObjectName("title")
@@ -536,18 +537,19 @@ class MainWindow(QMainWindow):
         rail_layout.addStretch()
         return rail
 
-    # ---------- 左侧栏折叠/展开动画 ----------
-    def _limit_shop_stack(self, min_w: int, max_w: int | None = None) -> None:
-        """设置分割器子项（shop_stack）的宽度上下限；max_w=None 表示放开上限。
+    # ---------- 左侧栏宽度：拖缝 / 折叠展开动画 ----------
+    # 左栏宽度属性桥：QPropertyAnimation 逐帧写 shopPanelWidth → setFixedWidth，
+    # 右栏在布局里 stretch=1，被动吸收剩余空间变化（推开的语义天然成立）
+    @pyqtProperty(int)
+    def shopPanelWidth(self) -> int:
+        return self.shop_stack.width()
 
-        展开态夹在 [SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH]，
-        收起态放开下限（窄轨 38 宽，比下限小）——切换时机见 collapse/expand/_on_splitter_dragging。
-        """
-        self.shop_stack.setMinimumWidth(min_w)
-        self.shop_stack.setMaximumWidth(max_w if max_w is not None else 16777215)
+    @shopPanelWidth.setter
+    def shopPanelWidth(self, value: int) -> None:
+        self.shop_stack.setFixedWidth(int(value))
 
     def _animate_panel_width(self, target_width: int, on_finished=None) -> None:
-        """把左侧栏从当前宽度平滑过渡到 target_width"""
+        """把左侧栏从当前宽度平滑过渡到 target_width（右栏被动跟随）"""
         anim = self.panel_animation
         anim.stop()
         try:
@@ -556,93 +558,83 @@ class MainWindow(QMainWindow):
             pass  # 没有已连接的槽时忽略
         if on_finished is not None:
             anim.finished.connect(on_finished)
-        # 动画期间禁用分割条拖拽，避免手动拖拽与动画互相打架
-        handle = self.splitter.handle(1)
-        handle.setEnabled(False)
+        # 动画期间禁用拖缝，避免手动拖拽与动画互相打架
+        self._panel_animating = True
+        self._split_bar.setEnabled(False)
 
-        def _reenable(*_):
-            handle.setEnabled(True)
+        def _reenable():
+            self._split_bar.setEnabled(True)
+            self._panel_animating = False
         anim.finished.connect(_reenable)
 
-        anim.setStartValue(self.splitter.sizes()[0])
-        anim.setEndValue(target_width)
+        anim.setStartValue(self.shop_stack.width())
+        anim.setEndValue(int(target_width))
         anim.start()
 
-    def eventFilter(self, obj, event):
-        """监听分割条手柄的鼠标按下/松开，驱动拖拽收起/展开"""
-        if obj is self._split_handle:
-            if event.type() == QEvent.Type.MouseButtonPress:
-                self._on_split_handle_pressed()
-            elif event.type() == QEvent.Type.MouseButtonRelease:
-                self._on_split_handle_released()
-        return super().eventFilter(obj, event)
-
-    def _on_split_handle_pressed(self) -> None:
-        """开始拖动分割条：折叠态不立即切页面，先让窄轨跟随宽度增长，
-        拖过阈值（_on_splitter_dragging）才切出完整面板——先宽后显，与收起相反"""
-        self._user_dragging = True
-        self._panel_switched_during_drag = False
-        if self._shop_collapsed:
-            self.panel_animation.stop()
-
-    def _on_splitter_dragging(self, pos: int, index: int) -> None:
-        """拖拽中实时判定：折叠态窄轨拖过阈值才切出完整面板，避免店铺列表突然跳出"""
-        if not self._user_dragging or not self._shop_collapsed or self._panel_switched_during_drag:
+    # ---------- 中间拖动缝 ----------
+    def _on_split_drag_started(self) -> None:
+        """记住按下时刻的左栏宽度，作为本次拖拽的位移基准"""
+        if self._panel_animating:
             return
-        width = self.splitter.sizes()[0]
-        if width >= PANEL_EXPAND_SWITCH_THRESHOLD:
-            self.shop_stack.setCurrentIndex(0)
-            self._shop_collapsed = False
-            self._panel_switched_during_drag = True
-            # 切回完整面板的瞬间把上下限收回分割器子项上：上限 330 让手柄到这里就停，
-            # 下限 73 防止再往回拖穿；没有这一步，拖出 330 后缝就会被扯开
-            self._limit_shop_stack(SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH)
+        self._drag_base_width = self.shop_stack.width()
 
-    def _on_split_handle_released(self) -> None:
-        """松手判定：拖到阈值以下自动吸附收起；否则记住展开宽度（夹在上下限内）"""
-        self._user_dragging = False
-        width = self.splitter.sizes()[0]
-        if width < PANEL_COLLAPSE_THRESHOLD:
-            self.collapse_shop_panel()
-        elif width > SHOP_RAIL_WIDTH + 20:
-            self._shop_expanded_width = max(
-                SHOP_PANEL_MIN_WIDTH, min(width, SHOP_PANEL_MAX_WIDTH)
+    def _on_split_drag_moved(self, dx: int) -> None:
+        """拖缝实时改宽：右拖为正 → 左栏变宽、右栏整体被推开；左拖为负 → 左栏收窄。
+
+        展开态宽度夹在 [SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH]；
+        折叠态窄轨先跟随增长，拖过阈值才切出完整面板（先宽后显，避免店铺列表突然跳出）。
+        """
+        if self._panel_animating or self._drag_base_width is None:
+            return
+        target = self._drag_base_width + dx
+        if self._shop_collapsed:
+            if target >= PANEL_EXPAND_SWITCH_THRESHOLD:
+                self._shop_collapsed = False
+                self.shop_stack.setCurrentIndex(0)
+                self.shop_stack.setFixedWidth(
+                    max(SHOP_PANEL_MIN_WIDTH, min(target, SHOP_PANEL_MAX_WIDTH))
+                )
+            else:
+                self.shop_stack.setFixedWidth(max(SHOP_RAIL_WIDTH, target))
+        else:
+            self.shop_stack.setFixedWidth(
+                max(SHOP_PANEL_MIN_WIDTH, min(target, SHOP_PANEL_MAX_WIDTH))
             )
+
+    def _on_split_drag_finished(self) -> None:
+        """松手：展开态记住当前宽度；折叠态没拖出阈值就回弹窄轨"""
+        self._drag_base_width = None
+        if self._panel_animating:
+            return
+        if self._shop_collapsed:
+            if self.shop_stack.width() != SHOP_RAIL_WIDTH:
+                self._animate_panel_width(SHOP_RAIL_WIDTH)  # 回弹窄轨，rail 不停在中间宽
+        else:
+            self._shop_expanded_width = self.shop_stack.width()
 
     def collapse_shop_panel(self) -> None:
         """收起左侧店铺栏：动画收窄到窄轨，结束后切换为窄轨页面"""
         if self._shop_collapsed:
             return
-        current = self.splitter.sizes()[0]
+        current = self.shop_stack.width()
         if current > SHOP_RAIL_WIDTH + 20:
             self._shop_expanded_width = current  # 记住用户当前宽度，展开时还原
-
-        # 先放开下限：收起动画要缩到 38（比展开下限 73 小），否则会被夹住
-        self._limit_shop_stack(0, SHOP_PANEL_MAX_WIDTH)
 
         def on_finished():
             self.shop_stack.setCurrentIndex(1)
             self._shop_collapsed = True
-            # 切到窄轨页面（min-width=0）后把左栏精确收到窄轨宽度，
-            # 否则会被店铺面板的 min-width 夹在 73，看起来没收起干净
-            available = self.splitter.width() - self.splitter.handleWidth()
-            self.splitter.setSizes([SHOP_RAIL_WIDTH, max(0, available - SHOP_RAIL_WIDTH)])
+            self.shop_stack.setFixedWidth(SHOP_RAIL_WIDTH)  # 精确钉在窄轨宽度
         self._animate_panel_width(SHOP_RAIL_WIDTH, on_finished)
 
     def expand_shop_panel(self) -> None:
-        """展开左侧店铺栏：先切回完整面板，再动画还原宽度"""
+        """展开左侧店铺栏：先切回完整面板，再从窄轨宽度动画还原"""
         if not self._shop_collapsed:
             return
         self.shop_stack.setCurrentIndex(0)
         self._shop_collapsed = False
-        # 动画期：起点是 38 的窄轨，须放开下限；上限先收紧，拖拽/动画都出不了 330
-        self._limit_shop_stack(0, SHOP_PANEL_MAX_WIDTH)
         target = max(SHOP_PANEL_MIN_WIDTH, min(self._shop_expanded_width, SHOP_PANEL_MAX_WIDTH))
-
-        def _finish_expand():
-            # 动画结束后恢复展开态约束，缝从此焊死在 [73, 330] 区间内
-            self._limit_shop_stack(SHOP_PANEL_MIN_WIDTH, SHOP_PANEL_MAX_WIDTH)
-        self._animate_panel_width(target, _finish_expand)
+        self.shop_stack.setFixedWidth(SHOP_RAIL_WIDTH)  # 从窄轨起点开始动画
+        self._animate_panel_width(target)
 
     def _build_record_panel(self):
         """右侧：素材表格面板"""
@@ -686,8 +678,8 @@ class MainWindow(QMainWindow):
         tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；Ctrl+A 全选记录；右键删除/复制选中的记录；Ctrl+Z 撤销上一步；图片格双击查看大图、Ctrl+C 复制、Del 删除、Ctrl+V 粘贴；右键更多操作")
         tip_label.setObjectName("tip")
         # 关键修复：这行提示很长，QLabel 不换行时 minimumSizeHint = 整行文字宽度（≈1356px），
-        # 会把右栏最小宽度撑爆 → QSplitter 认为右栏不能再收窄 → 左栏被钉死、缝往右拖不动。
-        # 开启自动换行后最小宽度提示降到 ≈72px，缝恢复全区间可拖。
+        # 会把右栏最小宽度撑爆 → 布局为满足右栏最小宽度会把左栏挤没（缝拖不动的帮凶）。
+        # 开启自动换行后最小宽度提示降到 ≈72px，左栏在任何窗口宽度下都稳在设定值。
         tip_label.setWordWrap(True)
         right_layout.addWidget(tip_label)
 

@@ -95,10 +95,12 @@ def build_field_updates(res: dict) -> dict:
             if opt and opt not in seen:
                 seen.add(opt)
                 spec_opts.append(opt)
+    # 默认选第一款规格；spec_options 是所有可选款
+    default_spec = spec_opts[0] if spec_opts else build_spec_text(res.get("skus") or [])
     updates = {
         "product_id": item_id,
         "title": res.get("title", ""),
-        "spec": build_spec_text(res.get("skus") or []),
+        "spec": default_spec,
         "spec_options": spec_opts,
         "link_image": [link_image] if link_image else [],
         "spec_image": spec_images,

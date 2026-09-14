@@ -1865,11 +1865,7 @@ class MainWindow(QMainWindow):
 
             logger.info("SKU 图下载完成，共 %d 张", len(spec_images))
 
-            # 3. 组装规格文本
-            spec_text = taobao_import.build_spec_text(res.get("skus") or [])
-
-            # 4. 构建记录（只填抓到的字段，image_paths 留空给好评晒图用）
-            # 展平 SKU 选项供规格列下拉选择
+            # 3. 展平 SKU 选项，默认选第一款
             spec_opts = []
             seen = set()
             for s in (res.get("skus") or []):
@@ -1878,6 +1874,7 @@ class MainWindow(QMainWindow):
                     if opt and opt not in seen:
                         seen.add(opt)
                         spec_opts.append(opt)
+            spec_text = spec_opts[0] if spec_opts else ""
             record = {
                 "product_id": item_id,
                 "spec_image": spec_images,       # 规格图 = SKU图（多张）

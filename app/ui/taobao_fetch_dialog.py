@@ -1,4 +1,4 @@
-"""淘宝商品抓取对话框：粘贴商品链接，用已登录的真 Chrome 抓取标题/价格/图片。"""
+"""淘宝商品抓取对话框：粘贴一段文本（可含多个链接/分享口令），批量抓取标题/价格/图片，一键填充。"""
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal, QObject, Qt, QPropertyAnimation, QEasingCurve, QTimer, pyqtProperty
@@ -6,39 +6,44 @@ from PyQt6.QtGui import QPixmap, QPainter
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import QRectF
 from PyQt6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
-    QScrollArea, QWidget, QMessageBox,
+    QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
+    QScrollArea, QWidget, QMessageBox, QTextEdit, QListWidget, QListWidgetItem,
 )
 
 from .. import config
 from ..services import taobao_playwright
-from ..services.link_utils import extract_product_url
+from ..services.link_utils import extract_all_product_urls
 from ..utils.logger import get_logger
 
 logger = get_logger("taobao.fetch")
 
-# 加载动画 SVG 路径
 LOADING_SVG = str(config.ASSETS_DIR / "loading.svg")
 
 
-class _FetchWorker(QObject):
-    done = pyqtSignal(dict)
+class _FetchBatchWorker(QObject):
+    """逐个抓取多个商品，进度/结果实时回吐"""
+    progress = pyqtSignal(int, int, str)       # done, total, current_url
+    item_done = pyqtSignal(int, dict)          # index, result
+    all_done = pyqtSignal(list)                # results in order
 
-    def __init__(self, url: str):
+    def __init__(self, urls: list):
         super().__init__()
-        self.url = url
+        self.urls = urls
 
     def run(self):
-        try:
-            res = taobao_playwright.fetch_item(self.url)
-        except Exception as e:
-            res = {"error": f"抓取异常：{e}"}
-        self.done.emit(res)
+        results = [None] * len(self.urls)
+        for i, url in enumerate(self.urls):
+            self.progress.emit(i, len(self.urls), url)
+            try:
+                res = taobao_playwright.fetch_item(url)
+            except Exception as e:
+                res = {"error": f"抓取异常：{e}", "url": url}
+            results[i] = res
+            self.item_done.emit(i, res)
+        self.all_done.emit(results)
 
 
 class _RotatingSvgIcon(QLabel):
-    """旋转的 SVG 加载图标：QSvgRenderer 手动渲染 + QPropertyAnimation 驱动旋转。
-    SVG 只解析一次，每帧只是旋转变换+重绘，性能开销极小。"""
     def __init__(self, svg_path: str, size: int = 64, parent=None):
         super().__init__(parent)
         self.setFixedSize(size, size)
@@ -80,22 +85,16 @@ class _RotatingSvgIcon(QLabel):
 
 
 class _LoadingOverlay(QWidget):
-    """中央加载动画覆盖层：旋转 SVG + 状态文字"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setStyleSheet("background: rgba(255,255,255,0.85);")
         self.hide()
-
         lay = QVBoxLayout(self)
         lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.setSpacing(12)
-
-        # SVG 旋转加载图标
         self.icon = _RotatingSvgIcon(LOADING_SVG, 64)
         lay.addWidget(self.icon, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # 状态文字
         self.text = QLabel("加载中...")
         self.text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.text.setStyleSheet("color: #606266; font-size: 14px;")
@@ -111,39 +110,41 @@ class _LoadingOverlay(QWidget):
 
 
 class TaobaoFetchDialog(QDialog):
-    """粘贴淘宝商品链接，抓取并展示标题/价格/图片"""
-    fill_requested = pyqtSignal(dict)  # 填充到当前店铺：传递抓取结果
+    """粘贴一段文本（可含多个链接/分享口令），批量抓取并一键填充。"""
+    fill_requested = pyqtSignal(list)  # 成功抓取结果列表
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("抓取淘宝商品")
-        self.resize(760, 660)
-        # 加最小化按钮
-        self.setWindowFlags(
-            self.windowFlags()
-            | Qt.WindowType.WindowMinimizeButtonHint
-        )
+        self.resize(780, 700)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMinimizeButtonHint)
         self._thread = None
-        self._last_result = None
+        self._results = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        row = QHBoxLayout()
-        self.input = QLineEdit()
+        layout.addWidget(QLabel("粘贴文本（支持一次粘贴多段分享口令/多个链接，自动识别）："))
+        self.input = QTextEdit()
         self.input.setPlaceholderText(
-            "粘贴淘宝商品链接或【淘宝】分享口令，例如 https://item.taobao.com/item.htm?id=..."
+            "支持一次粘贴多个商品链接或多段【淘宝】分享口令，自动识别并逐个抓取：\n"
+            "https://item.taobao.com/item.htm?id=...\n"
+            "https://item.taobao.com/item.htm?id=..."
         )
-        self.btn = QPushButton("抓取")
+        self.input.setMaximumHeight(110)
+        layout.addWidget(self.input)
+
+        row = QHBoxLayout()
+        self.btn = QPushButton("开始抓取")
         self.btn.setStyleSheet(
             "QPushButton { background: #409EFF; color: white; border: none; "
-            "padding: 6px 18px; border-radius: 4px; }"
+            "padding: 8px 22px; border-radius: 4px; font-size: 14px; }"
             "QPushButton:hover { background: #66b1ff; }"
             "QPushButton:disabled { background: #a0cfff; }"
         )
         self.btn.clicked.connect(self._start)
-        row.addWidget(self.input)
+        row.addStretch()
         row.addWidget(self.btn)
         layout.addLayout(row)
 
@@ -151,25 +152,14 @@ class TaobaoFetchDialog(QDialog):
         self.status.setStyleSheet("color: #909399; font-size: 12px;")
         layout.addWidget(self.status)
 
-        self.result = QLabel("")
-        self.result.setWordWrap(True)
-        self.result.setTextFormat(Qt.TextFormat.RichText)
-        self.result.setStyleSheet("font-size: 13px;")
-        layout.addWidget(self.result)
+        # 结果列表
+        self.list = QListWidget()
+        self.list.setStyleSheet("font-size: 13px;")
+        layout.addWidget(self.list, 1)
 
-        # 图片区
-        self.img_area = QScrollArea()
-        self.img_area.setWidgetResizable(True)
-        self.img_container = QWidget()
-        self.img_layout = QHBoxLayout(self.img_container)
-        self.img_layout.setSpacing(8)
-        self.img_area.setWidget(self.img_container)
-        self.img_area.setMinimumHeight(160)
-        layout.addWidget(self.img_area)
-
-        # 底部按钮行
+        # 底部按钮
         btn_row = QHBoxLayout()
-        self.btn_fill = QPushButton("填充到当前店铺")
+        self.btn_fill = QPushButton("一键填充全部成功商品")
         self.btn_fill.setStyleSheet(
             "QPushButton { background: #67C23A; color: white; border: none; "
             "padding: 8px 20px; border-radius: 4px; font-size: 13px; }"
@@ -190,110 +180,81 @@ class TaobaoFetchDialog(QDialog):
         btn_row.addWidget(self.btn_close)
         layout.addLayout(btn_row)
 
-        # 中央加载动画覆盖层（放在最后，覆盖所有内容）
         self.loading_overlay = _LoadingOverlay(self)
         self.loading_overlay.setGeometry(self.rect())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # 覆盖层始终铺满整个对话框
         self.loading_overlay.setGeometry(self.rect())
 
     def _start(self):
-        url = extract_product_url(self.input.text())
-        if url != self.input.text().strip():
-            # 粘贴的是整段分享口令：把识别出的链接回填到输入框，所见即所得
-            self.input.setText(url)
-        if not url:
-            QMessageBox.information(self, "提示", "请先粘贴商品链接")
+        urls = extract_all_product_urls(self.input.toPlainText())
+        if not urls:
+            QMessageBox.information(self, "提示", "未识别到商品链接，请粘贴后再试")
             return
         self.btn.setEnabled(False)
         self.btn_fill.setEnabled(False)
-        self.status.setText("正在抓取（会先打开 Chrome 访问淘宝，请稍候）...")
-        self.result.setText("")
-        self._clear_images()
-        self.loading_overlay.show_with_text("正在打开 Chrome 抓取商品...\n（首次启动较慢，请稍候）")
+        self.list.clear()
+        self._results = [None] * len(urls)
+        for i, u in enumerate(urls):
+            self.list.addItem(QListWidgetItem(f"⏳ 待抓取：{u[:80]}"))
+        self.status.setText(f"共识别到 {len(urls)} 个商品，开始逐个抓取...")
+        self.loading_overlay.show_with_text(f"正在打开 Chrome 抓取（0/{len(urls)}）...")
 
         self._thread = QThread()
-        self._worker = _FetchWorker(url)
+        self._worker = _FetchBatchWorker(urls)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_done)
-        self._worker.done.connect(self._thread.quit)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.item_done.connect(self._on_item_done)
+        self._worker.all_done.connect(self._on_all_done)
+        self._worker.all_done.connect(self._thread.quit)
         self._thread.start()
 
-    def _on_done(self, res: dict):
+    def _on_progress(self, done, total, url):
+        self.loading_overlay.show_with_text(f"正在抓取（{done}/{total}）...\n{url[:60]}")
+
+    def _on_item_done(self, idx, res):
+        self._results[idx] = res
+        item = self.list.item(idx)
+        if not item:
+            return
+        if res.get("error"):
+            item.setText(f"✗ 失败：{res.get('error','')[:60]}")
+            item.setForeground(Qt.GlobalColor.red)
+        else:
+            item.setText(f"✓ {res.get('title','')[:60]}  ¥{res.get('price','')}  ({len(res.get('images',[]))}图)")
+            item.setForeground(Qt.GlobalColor.darkGreen)
+
+    def _on_all_done(self, results):
         self.btn.setEnabled(True)
         self.loading_overlay.hide_overlay()
-        if res.get("error"):
-            # cookie失效时自动清空本地cookie文件
-            err = res["error"]
-            if "cookie" in err and ("失效" in err or "重新登录" in err):
-                try:
-                    if config.TAOBAO_COOKIE_FILE.exists():
-                        config.TAOBAO_COOKIE_FILE.unlink()
-                        logger.info("检测到cookie失效，已自动清空本地cookie文件")
-                except Exception as e:
-                    logger.warning("清空cookie文件失败: %s", e)
-            self.status.setText(f"✗ {err}")
-            self.btn_fill.setEnabled(False)
-            self._last_result = None
-            logger.error("抓取失败: %s", err)
-            return
-        self._last_result = res
-        self.btn_fill.setEnabled(True)
-        self.status.setText("✓ 抓取成功")
-        sku_text = ""
-        if res.get("skus"):
-            parts = [f"{s['name']}: {', '.join(s['options'][:3])}" for s in res["skus"][:2]]
-            sku_text = f"<br><b>规格：</b>{' | '.join(parts)}"
-        self.result.setText(
-            f"<b>标题：</b>{res.get('title','')}<br>"
-            f"<b>价格：</b>{res.get('price','')}<br>"
-            f"<b>商品ID：</b>{res.get('item_id','')}<br>"
-            f"<b>图片：</b>{len(res.get('images',[]))} 张"
-            f"{sku_text}"
-        )
-        self._load_images(res.get("images", []))
+        ok = [r for r in results if r and not r.get("error")]
+        fail = [r for r in results if r and r.get("error")]
+        self.status.setText(f"完成：成功 {len(ok)} 个，失败 {len(fail)} 个")
+        if ok:
+            self.btn_fill.setEnabled(True)
+            self._results = ok
+        else:
+            # cookie 失效自动清
+            for r in fail:
+                err = r.get("error", "")
+                if "cookie" in err and ("失效" in err or "重新登录" in err):
+                    try:
+                        if config.TAOBAO_COOKIE_FILE.exists():
+                            config.TAOBAO_COOKIE_FILE.unlink()
+                    except Exception:
+                        pass
+                    break
 
     def _on_fill(self):
-        """点击填充按钮：把抓取结果通过信号传给主窗口"""
-        if not self._last_result:
+        if not self._results:
             return
-        logger.info("用户点击填充到当前店铺，商品ID=%s", self._last_result.get("item_id"))
         self.btn_fill.setEnabled(False)
         self.btn_fill.setText("正在填充...")
-        self.loading_overlay.show_with_text("正在下载图片并填充到店铺...")
-        # 让界面先刷新
+        self.loading_overlay.show_with_text(f"正在下载图片并填充 {len(self._results)} 个商品...")
         from PyQt6.QtWidgets import QApplication
         QApplication.processEvents()
-        self.fill_requested.emit(self._last_result)
+        self.fill_requested.emit(self._results)
         self.loading_overlay.hide_overlay()
-        self.btn_fill.setText("填充到当前店铺")
         self.accept()
-
-    def _clear_images(self):
-        while self.img_layout.count():
-            it = self.img_layout.takeAt(0)
-            w = it.widget()
-            if w:
-                w.deleteLater()
-
-    def _load_images(self, urls: list):
-        self._clear_images()
-        for u in urls[:8]:
-            lbl = QLabel()
-            lbl.setFixedSize(140, 140)
-            lbl.setStyleSheet("border: 1px solid #ddd;")
-            lbl.setScaledContents(True)
-            # 用 requests 下载缩略图（已登录 cookie 在 playwright 里，这里直接下 alicdn 公开图）
-            try:
-                import requests
-                r = requests.get(u, timeout=10, headers={"Referer": "https://item.taobao.com/"})
-                if r.status_code == 200:
-                    pm = QPixmap()
-                    pm.loadFromData(r.content)
-                    lbl.setPixmap(pm)
-            except Exception as e:
-                logger.debug("加载缩略图失败 %s: %s", u[:60], e)
-            self.img_layout.addWidget(lbl)

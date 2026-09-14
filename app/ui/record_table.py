@@ -335,6 +335,7 @@ class RecordTable(QTableWidget):
     # 链接栏右键：抓取此链接 / 填充抓取结果（行号、链接URL）
     link_fetch_requested = pyqtSignal(int, str)
     link_fill_requested = pyqtSignal(int, str)
+    batch_import_requested = pyqtSignal()  # 表头右键：一键获取当前店铺所有商品信息
     # 点击底部➕号按钮：请求添加一行空白记录
     add_row_requested = pyqtSignal()
 
@@ -457,6 +458,9 @@ class RecordTable(QTableWidget):
         header.sectionMoved.connect(self._on_section_moved)
         # 拖拽列宽 / 窗口拉伸导致列宽变化后，重新自适应行高并校正表头勾选框位置
         header.sectionResized.connect(self._on_section_resized)
+        # 表头右键：商品链接列弹出「获取所有商品信息」
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._on_header_context_menu)
         self.horizontalScrollBar().valueChanged.connect(self._position_header_check)
 
         # 表头开关：一个和文字差不多大的小按钮。未进入时显示“选择”，
@@ -538,6 +542,20 @@ class RecordTable(QTableWidget):
             self._enter_selection_mode()
         else:
             self._exit_selection_mode()
+
+    def _on_header_context_menu(self, pos):
+        """表头右键：右键落在「商品链接」列上时，弹「获取所有商品信息」。"""
+        col = self.horizontalHeader().logicalIndexAt(pos)
+        if col <= 0:
+            return
+        field = RECORD_FIELDS[col - 1]
+        if field != "product_url":
+            return
+        menu = QMenu(self)
+        act = menu.addAction("获取所有商品信息（一键导入）")
+        chosen = menu.exec(self.horizontalHeader().viewport().mapToGlobal(pos))
+        if chosen == act:
+            self.batch_import_requested.emit()
 
     # ---------- 列顺序 / 列宽 ----------
     def _on_section_moved(self, logical_index: int, old_visual: int, new_visual: int) -> None:
@@ -623,7 +641,10 @@ class RecordTable(QTableWidget):
             return
         row_count = self.rowCount()
         if row_count == 0:
-            self._add_btn.hide()
+            self._add_btn.move((self.width() - self._add_btn.width()) // 2,
+                               max(40, (self.height() - self._add_btn.height()) // 2))
+            self._add_btn.show()
+            self._add_btn.raise_()
             return
         last_row = row_count - 1
         # rowViewportPosition 返回相对于 viewport 的坐标，加表头高度即表格中的坐标
@@ -775,6 +796,16 @@ class RecordTable(QTableWidget):
         self._row_resize_timer.stop()
         self._scroll_anim.stop()   # 整表重建会复位滚动范围，先停掉进行中的滚动动画
 
+        # 规格列下拉选项：当前店铺所有记录的 spec 去重保序
+        spec_opts = []
+        seen = set()
+        for r in records:
+            s = (r.get("spec") or "").strip()
+            if s and s not in seen:
+                seen.add(s)
+                spec_opts.append(s)
+        self._spec_options = spec_opts
+
         self.setUpdatesEnabled(False)
         self.blockSignals(True)  # 批量 setItem 不触发 cellChanged，避免误写库
         self.setRowCount(0)
@@ -811,6 +842,9 @@ class RecordTable(QTableWidget):
                 self._render_image_cell(row, col, paths, field, multi=True)
             elif field in SINGLE_IMAGE_FIELDS:
                 self._render_image_cell(row, col, [value] if value else [], field, multi=False)
+            elif field == "spec":
+                text = "" if value is None else str(value)
+                self._render_spec_cell(row, col, text)
             else:
                 text = "" if value is None else str(value)
                 # 文本列保留可编辑标志：双击直接进入就地编辑，编辑结束由 cell_edited 落库
@@ -1279,6 +1313,25 @@ class RecordTable(QTableWidget):
         item = QTableWidgetItem(text)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         return item
+
+    def _render_spec_cell(self, row: int, col: int, current: str) -> None:
+        """规格列：格子内下拉框，选项来自当前店铺已有规格去重。"""
+        from PyQt6.QtWidgets import QComboBox
+        combo = QComboBox()
+        combo.setEditable(True)
+        opts = list(getattr(self, "_spec_options", []))
+        if current and current not in opts:
+            opts = [current] + opts
+        combo.addItems(opts if opts else [current])
+        combo.setCurrentText(current)
+        # 初始化时不触发落库
+        combo.blockSignals(True)
+        def _on_changed(text):
+            self.cell_edited.emit(row, "spec", text)
+        combo.currentTextChanged.connect(_on_changed)
+        combo.blockSignals(False)
+        combo.setStyleSheet("QComboBox { border: none; padding: 2px; }")
+        self.setCellWidget(row, col, combo)
 
     def _on_cell_changed(self, row: int, col: int) -> None:
         """文本格就地编辑完成：发出 (渲染行, 字段, 新文本) 由主窗口落库"""

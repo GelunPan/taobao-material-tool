@@ -37,3 +37,14 @@ def extract_product_url(text: str) -> str:
     if not m:
         return text
     return m.group(0).rstrip(_TRAILING_JUNK)
+
+
+def extract_all_product_urls(text: str) -> list:
+    if not text:
+        return []
+    seen=set(); out=[]
+    for m in _URL_RE.finditer(str(text)):
+        u=m.group(0).rstrip(_TRAILING_JUNK)
+        if u and u not in seen:
+            seen.add(u); out.append(u)
+    return out

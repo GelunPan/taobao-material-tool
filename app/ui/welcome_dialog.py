@@ -151,66 +151,73 @@ class WelcomeDialog(AnimatedDialog):
         right_layout.setSpacing(0)
 
         # 标题
-        right_title = QLabel("欢迎使用 👋")
-        right_title.setStyleSheet("color: #303133; font-size: 20px; font-weight: bold;")
-        right_layout.addWidget(right_title)
+        self._right_title = QLabel("v1.1 更新计划 🎉")
+        self._right_title.setStyleSheet("color: #303133; font-size: 20px; font-weight: bold;")
+        right_layout.addWidget(self._right_title)
         right_layout.addSpacing(4)
 
-        # 描述
-        desc = QLabel("以下是本工具的主要功能与快捷操作，助你快速上手")
-        desc.setStyleSheet("color: #909399; font-size: 13px;")
-        right_layout.addWidget(desc)
+        self._desc = QLabel("本次版本新增与调整内容")
+        self._desc.setStyleSheet("color: #909399; font-size: 13px;")
+        right_layout.addWidget(self._desc)
         right_layout.addSpacing(16)
 
-        # 可滚动内容区
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("""
-            QScrollArea { background: #FFFFFF; border: none; }
-            QScrollBar:vertical { width: 6px; background: transparent; }
-            QScrollBar::handle:vertical { background: #DCDFE6; border-radius: 3px; }
-            QScrollBar::handle:vertical:hover { background: #C0C4CC; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        """)
+        from PyQt6.QtWidgets import QStackedWidget
+        self._stack = QStackedWidget()
 
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 8, 0)
-        content_layout.setSpacing(14)
+        # --- 第 1 页：更新计划 ---
+        page1 = QWidget()
+        p1_lay = QVBoxLayout(page1)
+        p1_lay.setContentsMargins(0, 0, 8, 0)
+        p1_lay.setSpacing(14)
+        p1_lay.addWidget(self._section_title("🆕 v1.1 新功能"))
+        updates = [
+            ("批量抓取", "一次粘贴多段分享口令/多个链接，自动识别逐个抓取，一键填充全部"),
+            ("编辑菜单", "左上角「编辑 ▾」：选择批量模式 / 新增 / 修改 / 复制 / 删除商品"),
+            ("规格下拉", "规格列改为格子内下拉选择，选项自动汇总当前店铺已有规格"),
+            ("新建店铺", "店铺列表底部新增蓝色「+ 新建店铺」按钮，一键创建"),
+            ("导入迁移", "一键导入移到「商品链接」表头右键：获取所有商品信息"),
+            ("大图右键", "查看大图时右键可复制图片或删除当前图（翻页也能删）"),
+            ("Edge 支持", "登录可选 Chrome 或 Edge，两浏览器独立 profile 互不干扰"),
+            ("空表加号", "空店铺/空分类时加号按钮居中显示在表格内，不再消失"),
+        ]
+        for name, desc_text in updates:
+            p1_lay.addWidget(self._feature_item(name, desc_text))
+        p1_lay.addStretch()
+        self._stack.addWidget(page1)
 
-        # --- 主要功能 ---
-        content_layout.addWidget(self._section_title("✨ 主要功能"))
+        # --- 第 2 页：使用介绍 ---
+        page2 = QWidget()
+        p2_lay = QVBoxLayout(page2)
+        p2_lay.setContentsMargins(0, 0, 8, 0)
+        p2_lay.setSpacing(14)
+        p2_lay.addWidget(self._section_title("✨ 主要功能"))
         features = [
-            ("店铺管理", "左侧店铺列表，支持添加/删除/重命名/拖拽排序/自定义颜色"),
-            ("素材记录", "表格化管理商品素材，双击文本直接编辑，行高自适应"),
+            ("店铺管理", "左侧店铺列表，底部蓝色按钮新建，支持删除/重命名/拖拽排序/自定义颜色"),
+            ("素材记录", "表格化管理商品素材，双击文本直接编辑，规格列下拉选择"),
             ("图片操作", "规格图/链接主图/评价图片分离，支持粘贴/复制/删除/多图展示"),
-            ("淘宝登录", "Playwright 驱动本机真实 Chrome，持久化 profile 规避风控"),
-            ("商品抓取", "粘贴链接自动抓取标题/价格/主图/SKU 规格图"),
-            ("一键填充", "抓取结果直接填充到当前店铺或当前行，图片自动下载"),
+            ("淘宝登录", "Playwright 驱动本机 Chrome 或 Edge，登录对话框可下拉切换"),
+            ("商品抓取", "粘贴多段文本自动识别多个链接，批量抓取后一键填充"),
+            ("一键导入", "右键「商品链接」表头 → 获取所有商品信息，批量填入"),
         ]
         for name, desc_text in features:
-            content_layout.addWidget(self._feature_item(name, desc_text))
-
-        content_layout.addSpacing(4)
-
-        # --- 快捷操作 ---
-        content_layout.addWidget(self._section_title("⌨️ 快捷操作"))
+            p2_lay.addWidget(self._feature_item(name, desc_text))
+        p2_lay.addSpacing(4)
+        p2_lay.addWidget(self._section_title("⌨️ 快捷操作"))
         shortcuts = [
-            "双击表格文本 → 直接编辑",
+            "双击表格文本 → 直接编辑；规格列下拉选择",
             "图片列 Ctrl+V 粘贴 / Ctrl+C 复制 / Del 删除",
-            "右键图片 → 单独删除或复制该图片",
+            "双击缩略图看大图，大图右键复制/删除当前图",
             "右键商品链接 → 抓取此链接 / 抓取并填充到此行",
-            "表格底部 ➕ 号 → 快速添加空白行",
-            "左侧店铺右键 → 重命名 / 设置填充色 / 字体颜色",
+            "右键「商品链接」表头 → 获取所有商品信息",
+            "底部「编辑 ▾」→ 选择（进入批量勾选）/ 新增 / 修改 / 复制 / 删除",
+            "空表单点表格中间加号即可新增记录",
         ]
         for sc in shortcuts:
-            content_layout.addWidget(self._shortcut_item(sc))
+            p2_lay.addWidget(self._shortcut_item(sc))
+        p2_lay.addStretch()
+        self._stack.addWidget(page2)
 
-        content_layout.addStretch()
-        scroll.setWidget(content)
-        right_layout.addWidget(scroll, 1)
+        right_layout.addWidget(self._stack, 1)
 
         # ===== 底部操作栏 =====
         footer = QFrame()
@@ -233,10 +240,10 @@ class WelcomeDialog(AnimatedDialog):
         footer_layout.addWidget(self.dont_show_again)
         footer_layout.addStretch()
 
-        close_btn = QPushButton("开始使用")
-        close_btn.setFixedSize(120, 40)
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.setStyleSheet("""
+        self._next_btn = QPushButton("下一步")
+        self._next_btn.setFixedSize(120, 40)
+        self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._next_btn.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #5BA8FF, stop:1 #389BFF);
@@ -255,8 +262,8 @@ class WelcomeDialog(AnimatedDialog):
                     stop:0 #2E8AE6, stop:1 #1E7AD6);
             }
         """)
-        close_btn.clicked.connect(self._on_close)
-        footer_layout.addWidget(close_btn)
+        self._next_btn.clicked.connect(self._on_next_page)
+        footer_layout.addWidget(self._next_btn)
 
         right_layout.addWidget(footer)
         main.addWidget(right, 1)
@@ -304,6 +311,17 @@ class WelcomeDialog(AnimatedDialog):
             padding: 7px 12px;
         """)
         return label
+
+    def _on_next_page(self):
+        """下一步：第1页→第2页，第2页→关闭"""
+        idx = self._stack.currentIndex()
+        if idx == 0:
+            self._stack.setCurrentIndex(1)
+            self._right_title.setText("使用介绍 📖")
+            self._desc.setText("主要功能与快捷操作，助你快速上手")
+            self._next_btn.setText("开始使用")
+        else:
+            self._on_close()
 
     def _on_close(self):
         """关闭按钮：保存不再提醒设置 + 播放关闭动画"""

@@ -512,10 +512,16 @@ class MainWindow(QMainWindow):
         self.shop_tree.customContextMenuRequested.connect(self._on_shop_tree_menu)
         # 拖拽排序：松手后更新数据层顺序并持久化
         self.shop_tree.shop_order_changed.connect(self.on_shop_order_changed)
-        left_layout.addWidget(self.shop_tree)
+        left_layout.addWidget(self.shop_tree, 1)
 
-        # 新增店铺不再放按钮：统一在店铺列表右键里操作（右键空白处 → 新增店铺），
-        # 避免底部一排按钮 + 右键菜单两套入口各写一遍
+        self.btn_new_shop = QPushButton("+ 新建店铺")
+        self.btn_new_shop.setStyleSheet(
+            "QPushButton { background: #409EFF; color: white; border: none; padding: 8px; "
+            "border-radius: 4px; font-size: 13px; font-weight: bold; }"
+            "QPushButton:hover { background: #66b1ff; }"
+        )
+        self.btn_new_shop.clicked.connect(self.on_add_shop)
+        left_layout.addWidget(self.btn_new_shop)
         return left_widget
 
     def _build_collapsed_rail(self):
@@ -673,6 +679,7 @@ class MainWindow(QMainWindow):
         self.table.selection_changed.connect(self.on_selection_changed)
         self.table.link_fetch_requested.connect(self.on_link_fetch)
         self.table.link_fill_requested.connect(self.on_link_fill)
+        self.table.batch_import_requested.connect(self.on_batch_import)
         right_layout.addWidget(self.table)
 
         tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；Ctrl+A 全选记录；右键删除/复制选中的记录；Ctrl+Z 撤销上一步；图片格双击查看大图、Ctrl+C 复制、Del 删除、Ctrl+V 粘贴；右键更多操作")
@@ -687,12 +694,16 @@ class MainWindow(QMainWindow):
         # 删除不再放按钮：一律走右键（单行 / 多选区都支持），避免"手滑点一下就删"。
         # 新增/修改/复制收敛成一个「商品」下拉菜单，底部栏不再排一排同质按钮
         bottom_layout = QHBoxLayout()
-        self.btn_product = QPushButton("商品 ▾")
-        self.btn_product.setToolTip("新增商品 / 修改商品信息 / 复制商品信息")
+        self.btn_product = QPushButton("编辑 ▾")
+        self.btn_product.setToolTip("选择批量操作 / 新增 / 修改 / 复制 / 删除商品")
         self.product_menu = QMenu(self)
+        self.act_select = self.product_menu.addAction("选择")
+        self.act_select.setCheckable(True)
+        self.product_menu.addSeparator()
         self.act_product_add = self.product_menu.addAction("新增商品")
-        self.act_product_edit = self.product_menu.addAction("修改商品信息")
-        self.act_product_copy = self.product_menu.addAction("复制商品信息")
+        self.act_product_edit = self.product_menu.addAction("修改商品")
+        self.act_product_copy = self.product_menu.addAction("复制商品")
+        self.act_product_delete = self.product_menu.addAction("删除商品")
         self.btn_product.setMenu(self.product_menu)
         # 「导出」：一个入口，三种出口（Excel 表格 / 表单整表图片 / 截图历史）
         self.btn_export = QPushButton("导出 ▾")
@@ -722,12 +733,6 @@ class MainWindow(QMainWindow):
         self.btn_taobao_fetch = QPushButton("抓取商品")
         self.btn_taobao_fetch.setToolTip("粘贴淘宝商品链接，自动抓取标题/价格/主图")
         bottom_layout.addWidget(self.btn_taobao_fetch)
-        self.btn_batch_import = QPushButton("一键导入")
-        self.btn_batch_import.setToolTip(
-            "批量抓取当前店铺所有已填「商品链接」的商品信息并填入表格\n"
-            "（需先淘宝登录；已导入过的自动跳过；单条失败不影响其他条目）"
-        )
-        bottom_layout.addWidget(self.btn_batch_import)
         bottom_layout.addWidget(self.btn_product)
         self.selection_label = QLabel("已选 0 条")
         self.selection_label.setObjectName("tip")
@@ -743,11 +748,12 @@ class MainWindow(QMainWindow):
 
         self.btn_taobao_login.clicked.connect(self.on_taobao_login)
         self.btn_taobao_fetch.clicked.connect(self.on_open_fetch)
-        self.btn_batch_import.clicked.connect(self.on_batch_import)
         # 「商品」菜单三项：新增 / 修改 / 复制（action 用 triggered，不带 checked 布尔）
+        self.act_select.triggered.connect(self._on_toggle_select_menu)
         self.act_product_add.triggered.connect(lambda _checked=False: self.on_add_record())
         self.act_product_edit.triggered.connect(lambda _checked=False: self.on_edit_record())
         self.act_product_copy.triggered.connect(lambda _checked=False: self.on_copy_record())
+        self.act_product_delete.triggered.connect(lambda _checked=False: self.on_delete_record())
         self.act_export_excel.triggered.connect(lambda _checked=False: self.on_export_excel())
         self.act_export_image.triggered.connect(lambda _checked=False: self.on_export_image())
         self.act_screenshot_history.triggered.connect(lambda _checked=False: self.on_screenshot_history())
@@ -1442,6 +1448,14 @@ class MainWindow(QMainWindow):
                     record_index, field_name, "")
         self.refresh_table()
 
+    def _on_toggle_select_menu(self, checked: bool):
+        """菜单里点「选择」：切换批量选择模式，同步表头按钮与勾选列"""
+        self.table.set_selection_mode(checked)
+        if checked:
+            self.act_select.setText("✅ 选择")
+        else:
+            self.act_select.setText("选择")
+
     def on_selection_changed(self, count):
         """表格勾选数量变化时更新底部计数（仅批量选择模式下显示）"""
         self.selection_label.setText(f"已选 {count} 条")
@@ -1806,13 +1820,26 @@ class MainWindow(QMainWindow):
         # 对话框关闭后刷新登录按钮状态（可能因cookie失效被清空）
         self._refresh_login_button()
 
-    def _on_fill_fetch_result(self, res: dict):
-        """把淘宝抓取结果填充为一条新记录到当前店铺
-        spec_image = SKU图（多张），link_image = 商品主图，image_paths 留空（好评晒图用）
-        """
+    def _on_fill_fetch_result(self, results):
+        """把淘宝抓取结果（单条 dict 或多条 list）填充为新记录到当前店铺"""
         if not self.current_shop:
             QMessageBox.information(self, "提示", "请先在左侧选择一个店铺")
             return
+        if isinstance(results, dict):
+            results = [results]
+        ok = 0
+        for res in results:
+            if res.get("error"):
+                continue
+            try:
+                self._fill_one_fetch(res)
+                ok += 1
+            except Exception:
+                logger.exception("填充抓取结果失败: %s", res.get("title", ""))
+        QMessageBox.information(self, "完成", f"已填充 {ok}/{len(results)} 个商品到店铺「{self.current_shop}」")
+
+    def _fill_one_fetch(self, res: dict):
+        """把一条抓取结果填充为新记录到当前店铺"""
         try:
             item_id = str(res.get("item_id", ""))
 
@@ -1860,13 +1887,9 @@ class MainWindow(QMainWindow):
             self.refresh_shop_tree()
             logger.info("已填充抓取结果到店铺[%s]分类[%s]，商品ID=%s，规格图%d张",
                         self.current_shop, self.current_category, item_id, len(spec_images))
-            QMessageBox.information(self, "成功",
-                f"已添加到店铺「{self.current_shop}」\n"
-                f"标题：{res.get('title','')[:30]}\n"
-                f"规格图：{len(spec_images)} 张")
-        except Exception as e:
-            logger.exception("填充抓取结果失败")
-            QMessageBox.critical(self, "错误", f"填充失败：{e}")
+            return
+        except Exception:
+            raise
 
     def _on_taobao_cookies_received(self, cookies: list):
         """登录成功回调：保存 cookie 并更新按钮状态。

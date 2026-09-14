@@ -1869,10 +1869,20 @@ class MainWindow(QMainWindow):
             spec_text = taobao_import.build_spec_text(res.get("skus") or [])
 
             # 4. 构建记录（只填抓到的字段，image_paths 留空给好评晒图用）
+            # 展平 SKU 选项供规格列下拉选择
+            spec_opts = []
+            seen = set()
+            for s in (res.get("skus") or []):
+                for opt in s.get("options", []):
+                    opt = opt.strip()
+                    if opt and opt not in seen:
+                        seen.add(opt)
+                        spec_opts.append(opt)
             record = {
                 "product_id": item_id,
                 "spec_image": spec_images,       # 规格图 = SKU图（多张）
                 "spec": spec_text,
+                "spec_options": spec_opts,
                 "title": res.get("title", ""),
                 "link_image": [link_image] if link_image else [],  # 链接主图 = 商品主图
                 "helper": "",

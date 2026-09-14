@@ -844,7 +844,8 @@ class RecordTable(QTableWidget):
                 self._render_image_cell(row, col, [value] if value else [], field, multi=False)
             elif field == "spec":
                 text = "" if value is None else str(value)
-                self._render_spec_cell(row, col, text)
+                opts = record.get("spec_options") or []
+                self._render_spec_cell(row, col, text, opts)
             else:
                 text = "" if value is None else str(value)
                 # 文本列保留可编辑标志：双击直接进入就地编辑，编辑结束由 cell_edited 落库
@@ -1314,24 +1315,42 @@ class RecordTable(QTableWidget):
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         return item
 
-    def _render_spec_cell(self, row: int, col: int, current: str) -> None:
-        """规格列：格子内下拉框，选项来自当前店铺已有规格去重。"""
-        from PyQt6.QtWidgets import QComboBox
-        combo = QComboBox()
-        combo.setEditable(True)
-        opts = list(getattr(self, "_spec_options", []))
-        if current and current not in opts:
-            opts = [current] + opts
-        combo.addItems(opts if opts else [current])
-        combo.setCurrentText(current)
-        # 初始化时不触发落库
-        combo.blockSignals(True)
-        def _on_changed(text):
-            self.cell_edited.emit(row, "spec", text)
-        combo.currentTextChanged.connect(_on_changed)
-        combo.blockSignals(False)
-        combo.setStyleSheet("QComboBox { border: none; padding: 2px; }")
-        self.setCellWidget(row, col, combo)
+    def _render_spec_cell(self, row: int, col: int, current: str, options: list) -> None:
+        """规格列：左侧 QLabel 自动换行显示完整规格，右侧小按钮点开选 SKU 选项。"""
+        from PyQt6.QtWidgets import QWidget, QPushButton
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(4)
+
+        lbl = QLabel(current or "")
+        lbl.setWordWrap(True)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lbl.setStyleSheet("color: #303133; font-size: 12px; background: transparent;")
+        lay.addWidget(lbl, 1)
+
+        btn = QPushButton("选择")
+        btn.setFixedWidth(52)
+        btn.setFixedHeight(24)
+        btn.setStyleSheet(
+            "QPushButton { background: #ecf5ff; color: #409EFF; border: 1px solid #b3d8ff; "
+            "border-radius: 3px; font-size: 11px; }"
+            "QPushButton:hover { background: #409EFF; color: white; }"
+        )
+        def _pick():
+            menu = QMenu(w)
+            opts = list(options or [])
+            if current and current not in opts:
+                opts = [current] + opts
+            if not opts:
+                menu.addAction("（暂无选项，可双击直接编辑）")
+            for opt in opts:
+                a = menu.addAction(opt)
+                a.triggered.connect(lambda _c, o=opt: self.cell_edited.emit(row, "spec", o))
+            menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        btn.clicked.connect(_pick)
+        lay.addWidget(btn)
+        self.setCellWidget(row, col, w)
 
     def _on_cell_changed(self, row: int, col: int) -> None:
         """文本格就地编辑完成：发出 (渲染行, 字段, 新文本) 由主窗口落库"""

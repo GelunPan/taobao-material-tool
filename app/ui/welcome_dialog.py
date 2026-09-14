@@ -65,7 +65,7 @@ class WelcomeDialog(AnimatedDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(720, 560)
+        self.setFixedSize(820, 760)
         self.setWindowTitle(f"欢迎使用 {config.APP_TITLE}")
 
     def _build_content(self):
@@ -311,6 +311,28 @@ class WelcomeDialog(AnimatedDialog):
             padding: 7px 12px;
         """)
         return label
+
+    def _animate_pop(self):
+        """只做透明度淡入，不做 geometry 缩放（避免和 fixed size 冲突卡死）"""
+        self._opacity_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._opacity_anim.setDuration(280)
+        self._opacity_anim.setStartValue(0.0)
+        self._opacity_anim.setEndValue(1.0)
+        self._opacity_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._opacity_anim.start()
+
+    def close_with_animation(self):
+        """只做透明度淡出"""
+        if getattr(self, "_is_closing", False):
+            return
+        self._is_closing = True
+        self._close_opacity_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._close_opacity_anim.setDuration(180)
+        self._close_opacity_anim.setStartValue(1.0)
+        self._close_opacity_anim.setEndValue(0.0)
+        self._close_opacity_anim.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._close_opacity_anim.finished.connect(self.done)
+        self._close_opacity_anim.start()
 
     def _on_next_page(self):
         """下一步：第1页→第2页，第2页→关闭"""

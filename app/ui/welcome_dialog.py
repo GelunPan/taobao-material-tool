@@ -331,7 +331,7 @@ class WelcomeDialog(AnimatedDialog):
         self._close_opacity_anim.setStartValue(1.0)
         self._close_opacity_anim.setEndValue(0.0)
         self._close_opacity_anim.setEasingCurve(QEasingCurve.Type.InCubic)
-        self._close_opacity_anim.finished.connect(self.done)
+        self._close_opacity_anim.finished.connect(lambda: self.done(0))
         self._close_opacity_anim.start()
 
     def _on_next_page(self):

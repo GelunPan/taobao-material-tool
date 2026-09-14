@@ -1,14 +1,12 @@
-"""淘宝登录对话框：调用本机真实 Chrome（Playwright）完成扫码登录。
+"""淘宝登录对话框：调用本机真实浏览器（Playwright）完成扫码登录。
 
-不再内嵌 QWebEngine（嵌入式 Chromium 指纹会被淘宝风控）。
-打开本对话框后自动启动一个真实 Chrome 窗口，请在其中扫码；
-登录成功并验证通过后自动发出 cookies_received 并关闭。
+用户可选择用 Chrome 还是 Edge 登录（自动探测本机已装的浏览器）。
 """
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout,
+    QComboBox, QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout,
 )
 
 from .. import config
@@ -23,10 +21,15 @@ class _LoginWorker(QObject):
     status = pyqtSignal(str)
     done = pyqtSignal(bool, str)
 
+    def __init__(self, browser: str):
+        super().__init__()
+        self.browser = browser
+
     def run(self):
         try:
             ok, msg = taobao_playwright.run_login(
-                config.TAOBAO_COOKIE_FILE, on_status=self.status.emit
+                config.TAOBAO_COOKIE_FILE, on_status=self.status.emit,
+                browser=self.browser,
             )
             self.done.emit(ok, msg)
         except Exception as e:
@@ -35,7 +38,7 @@ class _LoginWorker(QObject):
 
 
 class TaobaoLoginDialog(QDialog):
-    """淘宝登录对话框：启动真实 Chrome 扫码，成功后发出 cookie。
+    """淘宝登录对话框：选择浏览器并扫码，成功后发出 cookie。
 
     信号：cookies_received(list[dict])：登录验证成功后发出。
     """
@@ -57,7 +60,17 @@ class TaobaoLoginDialog(QDialog):
         title.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(title)
 
-        self._tip = QLabel("点击下方按钮，将打开一个真实的 Chrome 浏览器窗口，请用淘宝 APP 扫码登录。")
+        # 浏览器选择
+        brow_row = QHBoxLayout()
+        brow_row.addWidget(QLabel("登录浏览器："))
+        self._brow_combo = QComboBox()
+        available = taobao_playwright.list_available_browsers()
+        self._brow_combo.addItems(available)
+        # 默认选第一个可用（通常是 Chrome）
+        brow_row.addWidget(self._brow_combo, 1)
+        layout.addLayout(brow_row)
+
+        self._tip = QLabel("点击下方按钮，将打开所选浏览器窗口，请用淘宝 APP 扫码登录。")
         self._tip.setWordWrap(True)
         self._tip.setStyleSheet("color: #606266; font-size: 13px;")
         layout.addWidget(self._tip)
@@ -68,7 +81,7 @@ class TaobaoLoginDialog(QDialog):
         layout.addWidget(self._status)
 
         row = QHBoxLayout()
-        self._btn_start = QPushButton("打开 Chrome 登录")
+        self._btn_start = QPushButton("打开浏览器登录")
         self._btn_start.setStyleSheet(
             "QPushButton { background: #4CAF50; color: white; border: none; "
             "padding: 8px 24px; border-radius: 4px; font-size: 14px; }"
@@ -82,11 +95,13 @@ class TaobaoLoginDialog(QDialog):
         layout.addLayout(row)
 
     def _start_login(self):
+        browser = self._brow_combo.currentText()
+        self._brow_combo.setEnabled(False)
         self._btn_start.setEnabled(False)
         self._btn_start.setText("登录中...")
-        self._status.setText("正在启动浏览器...")
+        self._status.setText(f"正在启动 {browser} ...")
         self._thread = QThread()
-        self._worker = _LoginWorker()
+        self._worker = _LoginWorker(browser)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.status.connect(self._status.setText)
@@ -111,6 +126,7 @@ class TaobaoLoginDialog(QDialog):
             self.accept()
         else:
             self._status.setText(f"✗ {msg}")
+            self._brow_combo.setEnabled(True)
             self._btn_start.setEnabled(True)
             self._btn_start.setText("重试")
             QMessageBox.warning(self, "登录未完成", msg)

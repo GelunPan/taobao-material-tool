@@ -25,35 +25,53 @@ from .link_utils import extract_product_url
 logger = get_logger("taobao.pw")
 
 
-def _find_chrome() -> str | None:
-    """探测本机真实 Chrome 可执行文件路径。
+CHROME_PATHS = [
+    r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+    r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+    r"%LocalAppData%\Google\Chrome\Application\chrome.exe",
+]
+EDGE_PATHS = [
+    r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+    r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+]
 
-    客户机器上 Chrome 可能装在 Program Files、用户目录、Edge 自带等不同位置，
-    Playwright 的 channel="chrome" 只在固定路径找，找不到就报
-    "Chromium distribution 'chrome' is not found"。这里把常见位置都试一遍。
-    找不到返回 None，调用方回退到 Playwright 自带 Chromium。
+
+def list_available_browsers() -> list:
+    """返回本机可用的浏览器名列表（按探测顺序），供 UI 下拉选择。"""
+    import os
+    avail = []
+    for label, paths in (("Chrome", CHROME_PATHS), ("Edge", EDGE_PATHS)):
+        if any(os.path.exists(os.path.expandvars(p)) for p in paths):
+            avail.append(label)
+    if not avail:
+        avail.append("系统自带 Chromium")
+    return avail
+
+
+def _find_chrome(browser: str = "auto"):
+    """探测本机浏览器可执行文件路径。
+    browser: "auto"=Chrome→Edge→自带Chromium; "Chrome"=只用 Chrome; "Edge"=只用 Edge。
     """
     import os
-    candidates = [
-        # Chrome
-        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
-        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
-        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
-        # Edge（Windows 自带，Chromium 内核，人人都有）
-        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
-        os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
-    ]
-    for c in candidates:
-        if c and os.path.exists(c):
-            logger.info("探测到本机浏览器: %s", c)
-            return c
-    logger.warning("未找到 Chrome/Edge，将回退到 Playwright 自带 Chromium")
+    if browser == "Chrome":
+        groups = [("Chrome", CHROME_PATHS)]
+    elif browser == "Edge":
+        groups = [("Edge", EDGE_PATHS)]
+    else:
+        groups = [("Chrome", CHROME_PATHS), ("Edge", EDGE_PATHS)]
+    for label, paths in groups:
+        for p in paths:
+            c = os.path.expandvars(p)
+            if c and os.path.exists(c):
+                logger.info("探测到 %s: %s", label, c)
+                return c
+    logger.warning("未找到 %s，将回退到 Playwright 自带 Chromium", browser)
     return None
 
 
-def _launch_kwargs(headless: bool):
-    """构造 launch 参数：优先用真 Chrome，找不到回退自带 Chromium"""
-    exe = _find_chrome()
+def _launch_kwargs(headless: bool, browser: str = "auto"):
+    """构造 launch 参数：优先用选定/自动探测的真浏览器，找不到回退自带 Chromium"""
+    exe = _find_chrome(browser)
     kw = {
         "headless": headless,
         "viewport": {"width": 1280, "height": 900},
@@ -62,9 +80,9 @@ def _launch_kwargs(headless: bool):
     if exe:
         kw["executable_path"] = exe
     else:
-        # 没装真 Chrome 时用自带 Chromium（打包机已 playwright install chromium）
         logger.warning("回退到 Playwright 自带 Chromium（淘宝风控可能更严）")
     return kw
+
 
 LOGIN_URL = "https://login.taobao.com/member/login.jhtml"
 VERIFY_URL = "https://i.taobao.com/my_taobao.htm"
@@ -143,7 +161,7 @@ def _verify_login_on_site(page) -> bool:
     return ok
 
 
-def run_login(cookie_file: Path, on_status=None) -> tuple[bool, str]:
+def run_login(cookie_file: Path, on_status=None, browser: str = "auto") -> tuple[bool, str]:
     """打开真实 Chrome 完成登录，把 cookie 写入 cookie_file。
 
     on_status(str): 进度回调（可选）。阻塞调用，应放在工作线程里跑。
@@ -168,7 +186,7 @@ def run_login(cookie_file: Path, on_status=None) -> tuple[bool, str]:
     _emit("正在启动本机 Chrome 浏览器...")
     try:
         with sync_playwright() as p:
-            kw = _launch_kwargs(headless=False)
+            kw = _launch_kwargs(headless=False, browser=browser)
             kw["args"].append("--start-maximized")
             ctx = p.chromium.launch_persistent_context(
                 PROFILE_DIR,

@@ -25,8 +25,8 @@ ASSETS_DIR = BASE_DIR / "app" / "assets"   # 界面图标素材（复选框三�
 
 # ---------- 应用 ----------
 APP_TITLE = "淘宝评价工具"
-APP_VERSION = "1.0.0"
-APP_VERSION_NAME = "v1.0 正式版"
+APP_VERSION = "1.1.0"
+APP_VERSION_NAME = "v1.1 正式版"
 
 # ---------- 素材记录字段（顺序即表格列顺序） ----------
 RECORD_FIELDS = [

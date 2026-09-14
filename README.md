@@ -1,6 +1,6 @@
 # 淘宝评价工具
 
-> 版本：**v1.0 正式版** · 本地离线桌面工具
+> 版本：**v1.1 正式版** · 本地离线桌面工具
 
 面向淘宝运营/评价维护场景的素材管理工具：按店铺组织评价素材记录，支持截图直接粘贴进表格、按标题搜索、一键导出 Excel；内置淘宝登录与商品素材抓取（基于 Playwright 驱动本机真实 Chrome，规避风控）。全部数据保存在本地，不上传任何内容。
 
@@ -105,7 +105,7 @@ taobao-material-tool/
 | 依赖 | 版本要求 | 说明 |
 | --- | --- | --- |
 | Python | 3.9+（推荐 3.11/3.13） | 开发验证环境 3.13 |
-| Chrome 浏览器 | 任意较新版本 | **必须**，淘宝登录/抓取调用系统真实 Chrome（非自带 Chromium） |
+| Chrome 或 Edge | 任意较新版本 | **二选一**，淘宝登录/抓取调用系统真实浏览器（非自带 Chromium），登录时可下拉切换 |
 | Git | 任意 | 代码版本管理 |
 | 操作系统 | Windows 10/11 | 开发验证环境 Windows，理论上跨平台 |
 
@@ -210,7 +210,7 @@ D:\tools\python\envs\taobao-build\Scripts\python.exe installer\build_all.py
 python installer/build_all.py
 ```
 
-产物：`dist/淘宝评价工具安装程序.exe`
+产物：`dist/win10_x64_taobaotools_V1.1.exe`
 （**单个 exe 安装程序**，约 270MB——PyInstaller 把完整应用压缩内嵌，双击即运行，无需附带任何文件夹；首次启动会自解压到临时目录，属一次性开销）
 
 ### 安装程序工作流
@@ -229,6 +229,7 @@ python installer/build_all.py
 - `data/images/` — 图片文件
 - `data/screenshots/` — 表单截图归档
 - `data/taobao_chrome_profile/` — Chrome 持久化登录态
+- `data/taobao_edge_profile/` — Edge 持久化登录态
 - `data/logs/` — 操作日志
 
 把数据放在 `_internal` 之外，重装 / 修复时不会被覆盖，数据不丢。
@@ -284,14 +285,14 @@ Windows 会锁定「正在运行」的 exe 文件。若之前跑过 `--test` 或
 
 ```bash
 # 无界面跑完整安装流程（解压 + 桌面快捷方式），验证产物是否可用
-dist/淘宝评价工具安装程序.exe --test D:/tmp_test_install
+dist/win10_x64_taobaotools_V1.1.exe --test D:/tmp_test_install
 ```
 
 重点确认：`_internal/app/style.qss` 是**文件**而不是目录（坑 1 的直接验证点）。
 
 ### 目标机器注意事项
 
-- **必须安装 Chrome 浏览器**：淘宝登录 / 抓取调用的是系统真实 Chrome（非自带 Chromium），目标机需自备 Chrome 且可被识别
+- **本机需有 Chrome 或 Edge**：淘宝登录/抓取调用系统真实浏览器（二选一，登录对话框里可切换）；Windows 自带 Edge 即可，无需另装 Chrome
 - 安装程序**不含** Playwright 的 Chromium 内核下载；开发机打包时已就绪，分发到同机直接用即可；若换到未装驱动的环境，需先在目标机执行 `playwright install chromium`
 
 ---
@@ -416,11 +417,11 @@ git push origin main
 
 ### 淘宝登录与商品抓取
 
-1. **淘宝登录**：点底部「淘宝登录」按钮 → 弹出登录对话框 → 点「打开 Chrome 登录」→ 自动打开真实 Chrome 窗口 → 用淘宝 APP 扫码 → 登录后自动访问「我的淘宝」**真实验证**并保存 cookie，按钮变为「淘宝已登录 ✓」
+1. **淘宝登录**：点底部「淘宝登录」按钮 → 弹出登录对话框 → **下拉选择 Chrome 或 Edge**（自动探测本机已装浏览器）→ 点「打开浏览器登录」→ 自动打开所选浏览器窗口 → 用淘宝 APP 扫码 → 登录后自动访问「我的淘宝」**真实验证**并保存 cookie，按钮变为「淘宝已登录 ✓」
    - 已登录状态下点按钮可选择「重新登录」或「退出登录」
    - 必先扫码成功才报「登录成功」：若浏览器里残留的历史登录信息已失效，会自动清除并要求重新扫码，不会出现"假成功"
    - 「退出登录」会同时清除本地 cookie 与浏览器 profile 里的登录信息，状态可信、不留残留
-   - 登录态持久化保存在 `data/taobao_chrome_profile/`，下次启动自动恢复
+   - 登录态持久化保存在 `data/taobao_chrome_profile/`（Chrome）或 `data/taobao_edge_profile/`（Edge），两浏览器独立目录互不干扰，下次启动自动恢复
 2. **商品抓取**：点底部「抓取商品」按钮 → 弹出抓取对话框 → 粘贴淘宝商品链接 → 点「抓取」→ 后台自动打开 Chrome（先首页暖身再进商品页）→ 展示**商品标题、价格、商品ID、主图缩略图**
    - 抓取过程不阻塞界面，在工作线程运行
    - 需先完成淘宝登录，否则会提示先登录
@@ -449,6 +450,16 @@ git push origin main
 ---
 
 ## 版本记录
+
+### v1.1（正式版）— 浏览器选择 + 大图右键 + Edge 兼容
+
+**客户机兼容性增强**：新增 Edge 支持与登录浏览器选择，修复 Chrome/Edge 共用 profile 导致的 cookie 失效。
+
+- ✅ **登录浏览器可选**：登录对话框新增下拉框，自动探测本机已装的 Chrome / Edge，用户选哪个就用哪个打开扫码窗口
+- ✅ **Edge 支持**：Windows 自带 Edge（Chromium 内核）也可登录，客户机无需另装 Chrome；探测顺序 Chrome → Edge → Playwright 自带 Chromium
+- ✅ **Chrome/Edge 独立 profile**：两种浏览器各用各的持久化目录（`taobao_chrome_profile` / `taobao_edge_profile`），互不污染；登录时自动记录所用浏览器，抓取时复用对应 profile，修复「Edge 登录后总报 cookie 失效」
+- ✅ **大图窗口右键菜单**：查看大图时右键图片，可「复制图片」（到剪贴板）或「删除此图」（二次确认后从记录移除并刷新表格）；翻页到第 N 张再删，删的就是正在看的那张
+- ✅ **安装包改名**：输出 `win10_x64_taobaotools_V1.1.exe`，按操作系统/架构/工具名/版本号命名，便于客户分发
 
 ### v1.0（正式版）— 启动引导 + 抓取填充 + 交互打磨
 

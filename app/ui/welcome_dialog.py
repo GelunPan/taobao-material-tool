@@ -2,7 +2,7 @@
 
 继承 AnimatedDialog，自带可拖动 + 弹出/关闭动画。
 """
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QFont, QPainter, QLinearGradient, QColor, QBrush
 from PyQt6.QtWidgets import (
     QLabel, QPushButton, QCheckBox, QWidget, QScrollArea,

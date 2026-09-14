@@ -220,9 +220,11 @@ class MultiImageCell(TableCell):
         visible = self._indexed_paths if self._expanded else self._indexed_paths[:TABLE_MULTI_VISIBLE]
         for view_index, (stored_index, path) in enumerate(visible):
             thumb = self._table.make_thumb(self._thumb_size, view_paths, view_index)
+            all_si = [si for si, _ in self._indexed_paths]
             self._table.bind_image_menu(
                 thumb, self._row, self._col, self._field,
                 view_paths, view_index, stored_index, multi=True,
+                stored_indices=all_si,
             )
             self.flow.addWidget(thumb)
             self._table.enqueue_image_job(self._row, self._col, thumb, self._thumb_size, path)
@@ -1226,13 +1228,14 @@ class RecordTable(QTableWidget):
         self.setFocus()
 
     def bind_image_menu(self, anchor: QWidget, row: int, col: int, field_name: str,
-                        view_paths: list, view_index: int, stored_index: int, multi: bool) -> None:
+                        view_paths: list, view_index: int, stored_index: int, multi: bool,
+                        stored_indices: list = None) -> None:
         """给缩略图绑定右键菜单：查看大图 / 粘贴 / 删除此图，并在点击时选中所在格"""
         anchor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         anchor.customContextMenuRequested.connect(
             lambda pos, a=anchor, r=row, c=col, f=field_name, ps=view_paths,
-                   vi=view_index, si=stored_index, m=multi:
-            self._show_image_menu(a, pos, r, c, f, ps, vi, si, m)
+                   vi=view_index, si=stored_index, m=multi, sis=stored_indices:
+            self._show_image_menu(a, pos, r, c, f, ps, vi, si, m, sis)
         )
         # cellWidget 会拦截鼠标事件，表格不会自动更新 currentCell，这里手动补齐；
         # 同时记录最后点击的图片（含 stored_index），供 Ctrl+C 复制 / Del 删除
@@ -1244,7 +1247,7 @@ class RecordTable(QTableWidget):
 
     def _show_image_menu(self, anchor: QWidget, pos, row: int, col: int,
                          field_name: str, view_paths: list, view_index: int,
-                         stored_index: int, multi: bool) -> None:
+                         stored_index: int, multi: bool, stored_indices: list = None) -> None:
         self.setCurrentCell(row, col)
         menu = QMenu(self)
         act_view = menu.addAction("查看大图")
@@ -1257,7 +1260,8 @@ class RecordTable(QTableWidget):
         act_copy = menu.addAction("复制记录")
         chosen = menu.exec(anchor.mapToGlobal(pos))
         if chosen == act_view:
-            self.show_image_gallery(view_paths, view_index)
+            sis = stored_indices if stored_indices is not None else [stored_index] * len(view_paths)
+            self.show_image_gallery(view_paths, view_index, row, field_name, sis)
         elif chosen == act_copy_img:
             self.image_copy_requested.emit(view_paths[view_index])
         elif chosen == act_paste:
@@ -1532,8 +1536,10 @@ class RecordTable(QTableWidget):
         elif field_name == "product_url" and chosen == act_fill:
             self.link_fill_requested.emit(row, link_url)
 
-    # ---------- 查看大图（支持多张翻页） ----------
-    def show_image_gallery(self, paths: list, index: int = 0) -> None:
+    # ---------- 查看大图（支持多张翻页、右键复制/删除） ----------
+    def show_image_gallery(self, paths: list, index: int = 0,
+                           row: int = None, field_name: str = None,
+                           stored_indices: list = None) -> None:
         paths = [p for p in paths if p and os.path.exists(p)]
         if not paths:
             QMessageBox.information(self, "提示", "图片文件不存在")
@@ -1559,6 +1565,37 @@ class RecordTable(QTableWidget):
             counter.setText(f"{state['index'] + 1} / {len(paths)}")
             btn_prev.setEnabled(state["index"] > 0)
             btn_next.setEnabled(state["index"] < len(paths) - 1)
+
+        def _copy_current():
+            self.image_copy_requested.emit(paths[state["index"]])
+            QMessageBox.information(dialog, "已复制", "图片已复制到剪贴板")
+
+        def _delete_current():
+            if row is None or field_name is None or stored_indices is None:
+                return
+            si = stored_indices[state["index"]] if state["index"] < len(stored_indices) else state["index"]
+            ret = QMessageBox.question(
+                dialog, "删除图片", "确定删除当前这张图片吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ret == QMessageBox.StandardButton.Yes:
+                self.image_delete_requested.emit(row, field_name, si)
+                dialog.accept()
+
+        # 右键菜单：复制图片 / 删除此图
+        img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        def _on_gallery_menu(pos):
+            menu = QMenu(dialog)
+            act_copy = menu.addAction("复制图片")
+            can_delete = row is not None and field_name is not None and stored_indices is not None
+            act_delete = menu.addAction("删除此图") if can_delete else None
+            chosen = menu.exec(img_label.mapToGlobal(pos))
+            if chosen == act_copy:
+                _copy_current()
+            elif chosen is not None and chosen == act_delete:
+                _delete_current()
+        img_label.customContextMenuRequested.connect(_on_gallery_menu)
 
         bar = QHBoxLayout()
         btn_prev = QPushButton("上一张")

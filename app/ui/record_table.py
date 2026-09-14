@@ -32,6 +32,29 @@ from PyQt6.QtCore import (
     pyqtSignal,
 )
 from PyQt6.QtGui import QIcon, QKeySequence
+
+def smart_split_spec(text: str) -> list:
+    """智能把黏在一坨的规格文本拆成多条。
+
+    支持分隔符：, ， | / 、 ; ； \n
+    会去掉前缀如「颜色分类:」「商品规格:」「颜色:」。
+    """
+    if not text:
+        return []
+    # 先按 / 切（用户主要分隔符），其他分隔符也拆
+    parts = re.split(r"[\n/、,，|;；]+", str(text))
+    out = []
+    for p in parts:
+        p = p.strip().strip("/").strip()
+        # 去掉「xxx:」「xxx：」前缀
+        p = re.sub(r"^[^:：]{1,12}[:：]\s*", "", p)
+        p = p.strip().strip(",").strip()
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+import re
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -1316,7 +1339,7 @@ class RecordTable(QTableWidget):
         return item
 
     def _render_spec_cell(self, row: int, col: int, current: str, options: list) -> None:
-        """规格列：QLabel 自动换行显示（/ 分隔多款），双击编辑，右键添加规格，选择按钮追加 SKU。"""
+        """规格列：QLabel 自动换行（/ 分隔多款），双击编辑智能切分，+按钮展开所有款。"""
         from PyQt6.QtWidgets import QWidget, QPushButton, QLineEdit, QInputDialog
         w = QWidget()
         lay = QHBoxLayout(w)
@@ -1333,33 +1356,47 @@ class RecordTable(QTableWidget):
             lbl.setStyleSheet("color: #c0c4cc; font-size: 11px; background: transparent; font-style: italic;")
         lay.addWidget(lbl, 1)
 
-        btn = QPushButton("+")
-        btn.setFixedWidth(28)
-        btn.setFixedHeight(24)
-        btn.setToolTip("从已抓取的 SKU 里选一款追加")
+        btn = QPushButton("规格 ▾")
+        btn.setFixedWidth(80)
+        btn.setFixedHeight(26)
+        btn.setToolTip("展开所有规格，点击追加")
         btn.setStyleSheet(
-            "QPushButton { background: #ecf5ff; color: #409EFF; border: 1px solid #b3d8ff; "
-            "border-radius: 3px; font-size: 14px; }"
-            "QPushButton:hover { background: #409EFF; color: white; }"
+            "QPushButton { background: #409EFF; color: white; border: none; "
+            "border-radius: 4px; font-size: 12px; padding: 0 8px; }"
+            "QPushButton:hover { background: #66b1ff; }"
+            "QPushButton:pressed { background: #3a8ee6; }"
         )
 
+        def _all_options():
+            """合并已抓取 SKU + 当前 spec 智能拆出的条，去重"""
+            seen = []
+            for o in (options or []):
+                o = (o or "").strip()
+                if o and o not in seen:
+                    seen.append(o)
+            for o in smart_split_spec(current):
+                if o not in seen:
+                    seen.append(o)
+            return seen
+
         def _append(text):
-            """追加一段规格，用 / 分隔；已存在则不重复"""
             text = (text or "").strip().strip("/").strip()
             if not text:
                 return
-            cur = current.strip().strip("/").strip()
-            parts = [p.strip() for p in cur.split("/") if p.strip()]
-            if text in parts:
+            cur_parts = [p.strip() for p in smart_split_spec(current)]
+            if text in cur_parts:
                 return
-            parts.append(text)
-            self.cell_edited.emit(row, "spec", " / ".join(parts))
+            cur_parts.append(text)
+            new_val = " / ".join(cur_parts)
+            lbl.setText(new_val)
+            lbl.setStyleSheet("color: #303133; font-size: 12px; background: transparent;")
+            self.cell_edited.emit(row, "spec", new_val)
 
         def _pick():
             menu = QMenu(w)
-            opts = list(options or [])
+            opts = _all_options()
             if not opts:
-                menu.addAction("（暂无已抓取选项，右键可手动添加）")
+                menu.addAction("（暂无选项，右键可手动添加）")
             for opt in opts:
                 a = menu.addAction(opt)
                 a.triggered.connect(lambda _c, o=opt: _append(o))
@@ -1371,20 +1408,24 @@ class RecordTable(QTableWidget):
         lay.addWidget(btn)
 
         def _manual_add():
-            text, ok = QInputDialog.getText(w, "添加规格", "输入规格文本（自动追加到现有规格后）：")
+            text, ok = QInputDialog.getText(w, "添加规格", "输入规格文本（可在文本中用 / 分隔多条）：")
             if ok and text.strip():
-                _append(text)
+                for piece in smart_split_spec(text):
+                    _append(piece)
 
         def _edit_inline():
-            """双击进入就地编辑"""
             edit = QLineEdit(current)
+            edit.setPlaceholderText("输入规格，用 / 分隔多款")
             edit.setStyleSheet("border: 1px solid #409EFF; padding: 2px;")
             lay.replaceWidget(lbl, edit)
             lbl.hide()
             edit.setFocus()
             edit.selectAll()
             def _commit():
-                new_val = edit.text().strip()
+                raw = edit.text().strip()
+                # 智能切分：把黏在一坨的拆成多条，再用 / 拼
+                pieces = smart_split_spec(raw) if raw else []
+                new_val = " / ".join(pieces)
                 lbl.setText(new_val if new_val else "用 / 分隔多款规格")
                 lbl.setStyleSheet("color: #303133; font-size: 12px; background: transparent;" if new_val
                                   else "color: #c0c4cc; font-size: 11px; background: transparent; font-style: italic;")
@@ -1395,15 +1436,14 @@ class RecordTable(QTableWidget):
 
         lbl.mouseDoubleClickEvent = lambda e: _edit_inline()
 
-        # 右键菜单：添加规格 / 清空
         w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         def _ctx(pos):
             menu = QMenu(w)
-            a_add = menu.addAction("➕ 添加规格（/ 分隔）")
+            a_add = menu.addAction("➕ 添加规格（自动智能切分）")
             a_add.triggered.connect(_manual_add)
             a_clear = menu.addAction("🗑 清空规格")
             a_clear.triggered.connect(lambda: self.cell_edited.emit(row, "spec", ""))
-            menu.exec(w.viewport().mapToGlobal(pos) if hasattr(w, "viewport") else w.mapToGlobal(pos))
+            menu.exec(w.mapToGlobal(pos))
         w.customContextMenuRequested.connect(_ctx)
 
         self.setCellWidget(row, col, w)

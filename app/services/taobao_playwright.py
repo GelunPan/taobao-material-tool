@@ -24,6 +24,46 @@ from .link_utils import extract_product_url
 
 logger = get_logger("taobao.pw")
 
+
+def _find_chrome() -> str | None:
+    """探测本机真实 Chrome 可执行文件路径。
+
+    客户机器上 Chrome 可能装在 Program Files、用户目录、Edge 自带等不同位置，
+    Playwright 的 channel="chrome" 只在固定路径找，找不到就报
+    "Chromium distribution 'chrome' is not found"。这里把常见位置都试一遍。
+    找不到返回 None，调用方回退到 Playwright 自带 Chromium。
+    """
+    import os
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            logger.info("探测到本机 Chrome: %s", c)
+            return c
+    logger.warning("未在常见路径找到 Chrome，将回退到 Playwright 自带 Chromium")
+    return None
+
+
+def _launch_kwargs(headless: bool):
+    """构造 launch 参数：优先用真 Chrome，找不到回退自带 Chromium"""
+    exe = _find_chrome()
+    kw = {
+        "headless": headless,
+        "viewport": {"width": 1280, "height": 900},
+        "args": ["--disable-blink-features=AutomationControlled"],
+    }
+    if exe:
+        kw["executable_path"] = exe
+    else:
+        # 没装真 Chrome 时用自带 Chromium（打包机已 playwright install chromium）
+        logger.warning("回退到 Playwright 自带 Chromium（淘宝风控可能更严）")
+    return kw
+
 LOGIN_URL = "https://login.taobao.com/member/login.jhtml"
 VERIFY_URL = "https://i.taobao.com/my_taobao.htm"
 HOME_URL = "https://www.taobao.com/"
@@ -126,15 +166,11 @@ def run_login(cookie_file: Path, on_status=None) -> tuple[bool, str]:
     _emit("正在启动本机 Chrome 浏览器...")
     try:
         with sync_playwright() as p:
+            kw = _launch_kwargs(headless=False)
+            kw["args"].append("--start-maximized")
             ctx = p.chromium.launch_persistent_context(
                 PROFILE_DIR,
-                channel="chrome",
-                headless=False,
-                viewport={"width": 1280, "height": 860},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--start-maximized",
-                ],
+                **kw,
             )
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             _emit("已打开淘宝登录页，请用淘宝 APP 扫码登录...")
@@ -202,13 +238,11 @@ def _new_result(url: str = None) -> dict:
 
 
 def _launch_context(p, headless: bool = True):
-    """启动持久化 Chrome 上下文（复用登录 profile，反自动化参数）"""
+    """启动持久化浏览器上下文（复用登录 profile，反自动化参数）。
+    优先本机真 Chrome，找不到回退 Playwright 自带 Chromium。"""
     return p.chromium.launch_persistent_context(
         PROFILE_DIR,
-        channel="chrome",
-        headless=headless,
-        viewport={"width": 1280, "height": 900},
-        args=["--disable-blink-features=AutomationControlled"],
+        **_launch_kwargs(headless),
     )
 
 

@@ -35,17 +35,19 @@ def _find_chrome() -> str | None:
     """
     import os
     candidates = [
+        # Chrome
         os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
         os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
         os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        # Edge（Windows 自带，Chromium 内核，人人都有）
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
     ]
     for c in candidates:
         if c and os.path.exists(c):
-            logger.info("探测到本机 Chrome: %s", c)
+            logger.info("探测到本机浏览器: %s", c)
             return c
-    logger.warning("未在常见路径找到 Chrome，将回退到 Playwright 自带 Chromium")
+    logger.warning("未找到 Chrome/Edge，将回退到 Playwright 自带 Chromium")
     return None
 
 

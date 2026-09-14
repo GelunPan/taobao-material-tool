@@ -88,7 +88,29 @@ LOGIN_URL = "https://login.taobao.com/member/login.jhtml"
 VERIFY_URL = "https://i.taobao.com/my_taobao.htm"
 HOME_URL = "https://www.taobao.com/"
 
-PROFILE_DIR = str(config.DATA_DIR / "taobao_chrome_profile")
+def _profile_dir(browser: str = "auto") -> str:
+    """按浏览器返回不同的 profile 目录。Chrome/Edge 内核相近但版本有差异，
+    共用同一目录会导致 cookie 数据库互相读不出，登录后抓数据报 cookie 失效。"""
+    name = "taobao_edge_profile" if browser == "Edge" else "taobao_chrome_profile"
+    return str(config.DATA_DIR / name)
+
+
+def _browser_marker_file(cookie_file: Path) -> Path:
+    return Path(cookie_file).parent / ".taobao_browser"
+
+
+def _save_browser_marker(cookie_file: Path, browser: str) -> None:
+    try:
+        _browser_marker_file(cookie_file).write_text(browser or "auto", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_browser_marker(cookie_file: Path) -> str:
+    try:
+        return _browser_marker_file(cookie_file).read_text(encoding="utf-8").strip()
+    except Exception:
+        return "auto"
 
 # 批量抓取时两条商品之间的默认间隔（秒），降低连续请求触发风控的概率
 BATCH_ITEM_DELAY_S = 2.0
@@ -118,16 +140,17 @@ def clear_profile_login() -> int:
     此时仅记录日志、不影响主流程）。
     """
     removed = 0
-    for rel in ("Default/Network/Cookies", "Default/Network/Cookies-journal",
-                "Default/Cookies", "Default/Cookies-journal"):
-        fp = Path(PROFILE_DIR) / rel
-        try:
-            if fp.exists():
-                fp.unlink()
-                removed += 1
-                logger.info("已清除浏览器登录信息文件: %s", fp)
-        except OSError as e:
-            logger.warning("清除登录信息文件失败 %s: %s", fp, e)
+    for base in (_profile_dir("Chrome"), _profile_dir("Edge")):
+        for rel in ("Default/Network/Cookies", "Default/Network/Cookies-journal",
+                    "Default/Cookies", "Default/Cookies-journal"):
+            fp = Path(base) / rel
+            try:
+                if fp.exists():
+                    fp.unlink()
+                    removed += 1
+                    logger.info("已清除浏览器登录信息文件: %s", fp)
+            except OSError as e:
+                logger.warning("清除登录信息文件失败 %s: %s", fp, e)
     if removed == 0:
         logger.info("浏览器 profile 无需清理（无 cookie 文件）")
     return removed
@@ -189,7 +212,7 @@ def run_login(cookie_file: Path, on_status=None, browser: str = "auto") -> tuple
             kw = _launch_kwargs(headless=False, browser=browser)
             kw["args"].append("--start-maximized")
             ctx = p.chromium.launch_persistent_context(
-                PROFILE_DIR,
+                _profile_dir(browser),
                 **kw,
             )
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -221,6 +244,7 @@ def run_login(cookie_file: Path, on_status=None, browser: str = "auto") -> tuple
                     cookie_file.write_text(
                         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8"
                     )
+                    _save_browser_marker(cookie_file, browser)
                     _emit(f"登录验证通过，已保存 {len(out)} 条 cookie")
                     ctx.close()
                     return True, f"登录成功（{len(out)} 条 cookie）"
@@ -257,12 +281,15 @@ def _new_result(url: str = None) -> dict:
             "saved_files": [], "error": None}
 
 
-def _launch_context(p, headless: bool = True):
+def _launch_context(p, headless: bool = True, cookie_file: Path = None):
     """启动持久化浏览器上下文（复用登录 profile，反自动化参数）。
-    优先本机真 Chrome，找不到回退 Playwright 自带 Chromium。"""
+    按上次登录用的浏览器选择 profile 目录，避免 Chrome/Edge 目录冲突。"""
+    browser = "auto"
+    if cookie_file is not None:
+        browser = _read_browser_marker(cookie_file)
     return p.chromium.launch_persistent_context(
-        PROFILE_DIR,
-        **_launch_kwargs(headless),
+        _profile_dir(browser),
+        **_launch_kwargs(headless, browser),
     )
 
 
@@ -564,7 +591,7 @@ def fetch_item(url: str, cookie_file: Path = None, save_dir: Path = None,
     result = _new_result(url)
     try:
         with sync_playwright() as p:
-            ctx = _launch_context(p, headless=headless)
+            ctx = _launch_context(p, headless=headless, cookie_file=cookie_file)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             _warmup(page)
             result = _visit_and_extract(page, url, wait_ms=wait_ms)
@@ -620,7 +647,7 @@ def fetch_items(urls: list, on_item_done=None, on_item_start=None,
 
     try:
         with sync_playwright() as p:
-            ctx = _launch_context(p, headless=headless)
+            ctx = _launch_context(p, headless=headless, cookie_file=cookie_file)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             _warmup(page)
             for i, url in enumerate(urls):

@@ -1316,40 +1316,96 @@ class RecordTable(QTableWidget):
         return item
 
     def _render_spec_cell(self, row: int, col: int, current: str, options: list) -> None:
-        """规格列：左侧 QLabel 自动换行显示完整规格，右侧小按钮点开选 SKU 选项。"""
-        from PyQt6.QtWidgets import QWidget, QPushButton
+        """规格列：QLabel 自动换行显示（/ 分隔多款），双击编辑，右键添加规格，选择按钮追加 SKU。"""
+        from PyQt6.QtWidgets import QWidget, QPushButton, QLineEdit, QInputDialog
         w = QWidget()
         lay = QHBoxLayout(w)
         lay.setContentsMargins(2, 2, 2, 2)
         lay.setSpacing(4)
 
-        lbl = QLabel(current or "")
+        current = current or ""
+        lbl = QLabel(current if current else "用 / 分隔多款规格")
         lbl.setWordWrap(True)
         lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        lbl.setStyleSheet("color: #303133; font-size: 12px; background: transparent;")
+        if current:
+            lbl.setStyleSheet("color: #303133; font-size: 12px; background: transparent;")
+        else:
+            lbl.setStyleSheet("color: #c0c4cc; font-size: 11px; background: transparent; font-style: italic;")
         lay.addWidget(lbl, 1)
 
-        btn = QPushButton("选择")
-        btn.setFixedWidth(52)
+        btn = QPushButton("+")
+        btn.setFixedWidth(28)
         btn.setFixedHeight(24)
+        btn.setToolTip("从已抓取的 SKU 里选一款追加")
         btn.setStyleSheet(
             "QPushButton { background: #ecf5ff; color: #409EFF; border: 1px solid #b3d8ff; "
-            "border-radius: 3px; font-size: 11px; }"
+            "border-radius: 3px; font-size: 14px; }"
             "QPushButton:hover { background: #409EFF; color: white; }"
         )
+
+        def _append(text):
+            """追加一段规格，用 / 分隔；已存在则不重复"""
+            text = (text or "").strip().strip("/").strip()
+            if not text:
+                return
+            cur = current.strip().strip("/").strip()
+            parts = [p.strip() for p in cur.split("/") if p.strip()]
+            if text in parts:
+                return
+            parts.append(text)
+            self.cell_edited.emit(row, "spec", " / ".join(parts))
+
         def _pick():
             menu = QMenu(w)
             opts = list(options or [])
-            if current and current not in opts:
-                opts = [current] + opts
             if not opts:
-                menu.addAction("（暂无选项，可双击直接编辑）")
+                menu.addAction("（暂无已抓取选项，右键可手动添加）")
             for opt in opts:
                 a = menu.addAction(opt)
-                a.triggered.connect(lambda _c, o=opt: self.cell_edited.emit(row, "spec", o))
+                a.triggered.connect(lambda _c, o=opt: _append(o))
+            menu.addSeparator()
+            a_new = menu.addAction("✎ 手动添加一条…")
+            a_new.triggered.connect(lambda: _manual_add())
             menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
         btn.clicked.connect(_pick)
         lay.addWidget(btn)
+
+        def _manual_add():
+            text, ok = QInputDialog.getText(w, "添加规格", "输入规格文本（自动追加到现有规格后）：")
+            if ok and text.strip():
+                _append(text)
+
+        def _edit_inline():
+            """双击进入就地编辑"""
+            edit = QLineEdit(current)
+            edit.setStyleSheet("border: 1px solid #409EFF; padding: 2px;")
+            lay.replaceWidget(lbl, edit)
+            lbl.hide()
+            edit.setFocus()
+            edit.selectAll()
+            def _commit():
+                new_val = edit.text().strip()
+                lbl.setText(new_val if new_val else "用 / 分隔多款规格")
+                lbl.setStyleSheet("color: #303133; font-size: 12px; background: transparent;" if new_val
+                                  else "color: #c0c4cc; font-size: 11px; background: transparent; font-style: italic;")
+                lbl.show()
+                edit.deleteLater()
+                self.cell_edited.emit(row, "spec", new_val)
+            edit.editingFinished.connect(_commit)
+
+        lbl.mouseDoubleClickEvent = lambda e: _edit_inline()
+
+        # 右键菜单：添加规格 / 清空
+        w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        def _ctx(pos):
+            menu = QMenu(w)
+            a_add = menu.addAction("➕ 添加规格（/ 分隔）")
+            a_add.triggered.connect(_manual_add)
+            a_clear = menu.addAction("🗑 清空规格")
+            a_clear.triggered.connect(lambda: self.cell_edited.emit(row, "spec", ""))
+            menu.exec(w.viewport().mapToGlobal(pos) if hasattr(w, "viewport") else w.mapToGlobal(pos))
+        w.customContextMenuRequested.connect(_ctx)
+
         self.setCellWidget(row, col, w)
 
     def _on_cell_changed(self, row: int, col: int) -> None:

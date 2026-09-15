@@ -1339,118 +1339,50 @@ class RecordTable(QTableWidget):
         return item
 
     def _render_spec_cell(self, row: int, col: int, current: str, options: list) -> None:
-        """规格列：左侧QLabel显示当前选中规格，右侧小▼下拉选（点哪款显示哪款）。"""
-        from PyQt6.QtWidgets import QWidget, QPushButton, QLineEdit, QInputDialog
-        w = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(2, 0, 2, 0)
-        lay.setSpacing(2)
+        """规格列：Excel 风格下拉框，点右侧小箭头弹列表，选哪款显示哪款。"""
+        from PyQt6.QtWidgets import QComboBox
+        cb = QComboBox()
+        cb.setEditable(True)
+        cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
 
-        current = current or ""
-        lbl = QLabel(current if current else "点击右侧 ▼ 选择规格")
-        lbl.setWordWrap(True)
-        lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        if current:
-            lbl.setStyleSheet("color: #303133; font-size: 12px; background: transparent;")
-        else:
-            lbl.setStyleSheet("color: #c0c4cc; font-size: 11px; background: transparent; font-style: italic;")
-        lay.addWidget(lbl, 1)
+        # 合并选项：已抓取 SKU + 当前 spec 智能拆出，过滤 <4 字无意义项
+        opts = []
+        seen = set()
+        for o in (options or []):
+            o = (o or "").strip()
+            if len(o) >= 4 and o not in seen:
+                seen.add(o); opts.append(o)
+        for o in smart_split_spec(current):
+            if len(o) >= 4 and o not in seen:
+                seen.add(o); opts.append(o)
+        # 当前值如果不在列表里，加进去
+        cur = (current or "").strip()
+        if cur and cur not in opts:
+            opts.insert(0, cur)
 
-        btn = QPushButton("▼")
-        btn.setFixedSize(22, 22)
-        btn.setToolTip("选择规格")
-        btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #909399; border: none; font-size: 10px; }"
-            "QPushButton:hover { color: #409EFF; background: #ecf5ff; border-radius: 3px; }"
-        )
+        cb.addItems(opts)
+        cb.setCurrentText(cur)
 
-        def _clean_opts():
-            """合并+过滤：去掉过短无意义项（如单独的'推荐'）"""
-            seen = []
-            for o in (options or []):
-                o = (o or "").strip()
-                if len(o) < 4:  # 太短的词无意义
-                    continue
-                if o not in seen:
-                    seen.append(o)
-            for o in smart_split_spec(current):
-                if len(o) < 4:
-                    continue
-                if o not in seen:
-                    seen.append(o)
-            return seen
+        # 下拉箭头小巧
+        cb.setStyleSheet("""
+            QComboBox { border: none; padding-right: 4px; background: transparent; }
+            QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: right center;
+                width: 16px; border: none; }
+            QComboBox QAbstractItemView { border: 1px solid #dcdfe6; background: white;
+                selection-background-color: #ecf5ff; selection-color: #409EFF; }
+        """)
 
-        def _pick():
-            menu = QMenu(w)
-            opts = _clean_opts()
-            if not opts:
-                menu.addAction("（暂无选项）")
-            for opt in opts:
-                a = menu.addAction(opt)
-                # 点哪款 → 替换显示（不是追加）
-                a.triggered.connect(lambda _c, o=opt: self._set_spec(row, lbl, o))
-            menu.addSeparator()
-            a_add = menu.addAction("➕ 追加一条规格…")
-            a_add.triggered.connect(lambda: _manual_add(append=True))
-            a_edit = menu.addAction("✎ 手动编辑全部…")
-            a_edit.triggered.connect(_edit_inline)
-            menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
-        btn.clicked.connect(_pick)
-        lay.addWidget(btn)
+        def _on_pick(text):
+            text = (text or "").strip()
+            self.cell_edited.emit(row, "spec", text)
+        cb.blockSignals(True)
+        cb.currentTextChanged.connect(_on_pick)
+        cb.blockSignals(False)
+        # 可编辑模式下，回车失焦提交
+        cb.lineEdit().editingFinished.connect(lambda: _on_pick(cb.currentText()))
 
-        def _manual_add(append=False):
-            text, ok = QInputDialog.getText(w, "添加规格", "输入规格（可用 / 分隔多条）：")
-            if not (ok and text.strip()):
-                return
-            pieces = smart_split_spec(text)
-            if append:
-                cur_parts = [p for p in smart_split_spec(current) if len(p) >= 4]
-                for p in pieces:
-                    if p not in cur_parts:
-                        cur_parts.append(p)
-                new_val = " / ".join(cur_parts)
-            else:
-                new_val = " / ".join(pieces)
-            lbl.setText(new_val if new_val else "点击右侧 ▼ 选择规格")
-            lbl.setStyleSheet("color: #303133; font-size: 12px; background: transparent;" if new_val
-                              else "color: #c0c4cc; font-size: 11px; background: transparent; font-style: italic;")
-            self.cell_edited.emit(row, "spec", new_val)
+        self.setCellWidget(row, col, cb)
 
-        def _edit_inline():
-            edit = QLineEdit(current)
-            edit.setPlaceholderText("用 / 分隔多款")
-            edit.setStyleSheet("border: 1px solid #409EFF; padding: 2px;")
-            lay.replaceWidget(lbl, edit)
-            lbl.hide()
-            edit.setFocus()
-            edit.selectAll()
-            def _commit():
-                raw = edit.text().strip()
-                pieces = smart_split_spec(raw) if raw else []
-                new_val = " / ".join(pieces)
-                lbl.setText(new_val if new_val else "点击右侧 ▼ 选择规格")
-                lbl.setStyleSheet("color: #303133; font-size: 12px; background: transparent;" if new_val
-                                  else "color: #c0c4cc; font-size: 11px; background: transparent; font-style: italic;")
-                lbl.show()
-                edit.deleteLater()
-                self.cell_edited.emit(row, "spec", new_val)
-            edit.editingFinished.connect(_commit)
-
-        lbl.mouseDoubleClickEvent = lambda e: _edit_inline()
-
-        w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        def _ctx(pos):
-            menu = QMenu(w)
-            a_add = menu.addAction("➕ 追加规格")
-            a_add.triggered.connect(lambda: _manual_add(append=True))
-            a_edit = menu.addAction("✎ 编辑全部")
-            a_edit.triggered.connect(_edit_inline)
-            a_clear = menu.addAction("🗑 清空")
-            a_clear.triggered.connect(lambda: self._set_spec(row, lbl, ""))
-            menu.exec(w.mapToGlobal(pos))
-        w.customContextMenuRequested.connect(_ctx)
-
-        self.setCellWidget(row, col, w)
 
     def _set_spec(self, row: int, lbl, value: str):
         """统一设置规格格显示并发信号落库"""

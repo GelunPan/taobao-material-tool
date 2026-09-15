@@ -1598,7 +1598,7 @@ class RecordTable(QTableWidget):
         # 跑马灯已由 MarqueeLineEdit 接管（像素级平滑滚动、常态不自动滚）
         self.setCellWidget(row, col, cb)
         # 如果全局跑马灯模式已开启，新渲染的格子也自动开始滚动
-        if getattr(self, _spec_marquee_all, False):
+        if getattr(self, "_spec_marquee_all", False):
             marquee_le.set_marquee_allowed(True)
 
 

@@ -103,17 +103,42 @@ def build_app():
         if not sample_shops:
             print("[warn] 没找到名为「示例」的店铺，将打包空数据")
         data["shops"] = sample_shops
+        # 收集示例数据引用的所有图片，并把绝对路径转为相对路径（只保留文件名）
+        image_fields = ["spec_image", "link_image", "image_paths"]
+        referenced_images = set()
+        for shop_name, shop_data in sample_shops.items():
+            if not isinstance(shop_data, dict):
+                continue
+            for cname, recs in shop_data.items():
+                if not isinstance(recs, list):
+                    continue
+                for rec in recs:
+                    if not isinstance(rec, dict):
+                        continue
+                    for field in image_fields:
+                        imgs = rec.get(field, [])
+                        if not isinstance(imgs, list):
+                            continue
+                        converted = []
+                        for img in imgs:
+                            if not img:
+                                continue
+                            fname = os.path.basename(img)
+                            converted.append(fname)
+                            src = img if os.path.isfile(img) else os.path.join(seed_images, fname)
+                            if os.path.isfile(src):
+                                referenced_images.add((src, fname))
+                        rec[field] = converted
+        # 只复制被引用的图片（而非整个 images 目录）
+        copied = 0
+        for src, fname in referenced_images:
+            dst = os.path.join(target_images, fname)
+            if os.path.isfile(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
+                copied += 1
         with open(os.path.join(target_data, "data.json"), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print("已打包示例数据：只保留「示例」店铺")
-    if os.path.isdir(seed_images):
-        import shutil
-        for f in os.listdir(seed_images):
-            src = os.path.join(seed_images, f)
-            dst = os.path.join(target_images, f)
-            if os.path.isfile(src):
-                shutil.copy2(src, dst)
-        print("已打包示例图片：images/")
+        print(f"已打包示例数据：只保留「示例」店铺，引用图片 {copied} 张（非全量复制）")
 
     print("主程序已生成：", DIST_APP)
 

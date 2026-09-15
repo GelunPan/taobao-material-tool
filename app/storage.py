@@ -79,6 +79,30 @@ class ShopRepository:
                     old_path = record.pop("image_path", "") or ""
                     record["image_paths"] = [old_path] if old_path else []
 
+        # 相对路径转绝对路径：打包后的示例数据里图片只存文件名，
+        # 这里统一拼接 images_dir，确保下游加载图片时路径有效
+        image_fields = ["spec_image", "link_image", "image_paths"]
+        for records in (r for cats in self.shops.values() for r in cats.values()):
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                for field in image_fields:
+                    imgs = record.get(field, [])
+                    if not isinstance(imgs, list):
+                        continue
+                    converted = []
+                    for img in imgs:
+                        if not img:
+                            continue
+                        # 已经是绝对路径且文件存在，直接用；否则当相对路径处理
+                        if os.path.isabs(img) and os.path.isfile(img):
+                            converted.append(img)
+                        else:
+                            fname = os.path.basename(img)
+                            abs_path = str(self.images_dir / fname)
+                            converted.append(abs_path)
+                    record[field] = converted
+
     def save(self) -> None:
         """将当前数据写入 data.json"""
         data = {

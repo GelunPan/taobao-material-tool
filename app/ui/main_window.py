@@ -1462,6 +1462,17 @@ class MainWindow(QMainWindow):
         with self._undo_step("修改单元格"):
             self.repo.set_record_field(self.current_shop, self.current_category,
                                        record_index, field, text)
+            # 规格选择/编辑时：把用过的款都存进 spec_options，下次下拉还能选
+            if field == "spec":
+                recs = self.repo.get_records(self.current_shop, self.current_category)
+                rec = recs[record_index] if record_index < len(recs) else {}
+                opts = list(rec.get("spec_options") or [])
+                from .record_table import smart_split_spec
+                for piece in smart_split_spec(text):
+                    if piece and piece not in opts:
+                        opts.append(piece)
+                self.repo.set_record_field(self.current_shop, self.current_category,
+                                           record_index, "spec_options", opts)
         self.table._adjust_row_heights()
 
     def on_paste_image_requested(self, row, col, field_name):

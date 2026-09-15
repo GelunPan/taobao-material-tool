@@ -1339,7 +1339,7 @@ class RecordTable(QTableWidget):
         return item
 
     def _render_spec_cell(self, row: int, col: int, current: str, options: list) -> None:
-        """规格列：Excel 风格下拉框，点右侧小箭头弹列表，选哪款显示哪款。"""
+        """规格列：Excel 风格下拉框，右侧小箭头弹列表，选哪款显示哪款。"""
         from PyQt6.QtWidgets import QComboBox
         cb = QComboBox()
         cb.setEditable(True)
@@ -1355,21 +1355,21 @@ class RecordTable(QTableWidget):
         for o in smart_split_spec(current):
             if len(o) >= 4 and o not in seen:
                 seen.add(o); opts.append(o)
-        # 当前值如果不在列表里，加进去
-        cur = (current or "").strip()
+
+        # 当前值智能清理：如果是长拼接，取第一款；去掉"商品规格:"前缀
+        cur_pieces = smart_split_spec(current)
+        cur = cur_pieces[0] if cur_pieces else ""
         if cur and cur not in opts:
             opts.insert(0, cur)
 
         cb.addItems(opts)
         cb.setCurrentText(cur)
 
-        # 下拉箭头小巧
+        # 只去掉边框，保留系统默认下拉箭头（不覆盖 drop-down）
         cb.setStyleSheet("""
-            QComboBox { border: none; padding-right: 4px; background: transparent; }
-            QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: right center;
-                width: 16px; border: none; }
+            QComboBox { border: none; background: transparent; padding-right: 2px; }
             QComboBox QAbstractItemView { border: 1px solid #dcdfe6; background: white;
-                selection-background-color: #ecf5ff; selection-color: #409EFF; }
+                selection-background-color: #ecf5ff; selection-color: #409EFF; outline: 0px; }
         """)
 
         def _on_pick(text):
@@ -1378,7 +1378,6 @@ class RecordTable(QTableWidget):
         cb.blockSignals(True)
         cb.currentTextChanged.connect(_on_pick)
         cb.blockSignals(False)
-        # 可编辑模式下，回车失焦提交
         cb.lineEdit().editingFinished.connect(lambda: _on_pick(cb.currentText()))
 
         self.setCellWidget(row, col, cb)

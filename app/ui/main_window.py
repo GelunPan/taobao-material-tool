@@ -514,14 +514,19 @@ class MainWindow(QMainWindow):
         self.shop_tree.shop_order_changed.connect(self.on_shop_order_changed)
         left_layout.addWidget(self.shop_tree, 1)
 
-        self.btn_new_shop = QPushButton("+ 新建店铺")
-        self.btn_new_shop.setStyleSheet(
+        self.btn_shop_mgmt = QPushButton("店铺管理")
+        self.btn_shop_mgmt.setStyleSheet(
             "QPushButton { background: #409EFF; color: white; border: none; padding: 8px; "
             "border-radius: 4px; font-size: 13px; font-weight: bold; }"
             "QPushButton:hover { background: #66b1ff; }"
         )
-        self.btn_new_shop.clicked.connect(self.on_add_shop)
-        left_layout.addWidget(self.btn_new_shop)
+        self.shop_mgmt_menu = QMenu(self)
+        self.act_add_shop = self.shop_mgmt_menu.addAction("➕ 新增店铺")
+        self.act_img_mgmt = self.shop_mgmt_menu.addAction("🖼 图片管理")
+        self.btn_shop_mgmt.setMenu(self.shop_mgmt_menu)
+        self.act_add_shop.triggered.connect(lambda: self.on_add_shop())
+        self.act_img_mgmt.triggered.connect(self._open_image_manager)
+        left_layout.addWidget(self.btn_shop_mgmt)
         return left_widget
 
     def _build_collapsed_rail(self):
@@ -796,6 +801,44 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", f"数据保存失败：{str(e)}")
 
     # ==================== 店铺管理 ====================
+    def _open_image_manager(self):
+        """图片管理：列出所有评价图片（先做个简单网格预览）"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QScrollArea, QGridLayout, QLabel
+        from .image_utils import scaled_pixmap
+        dlg = QDialog(self)
+        dlg.setWindowTitle("图片管理（所有评价图片）")
+        dlg.resize(900, 600)
+        lay = QVBoxLayout(dlg)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        host = QWidget()
+        grid = QGridLayout(host)
+        grid.setSpacing(8)
+        imgs = []
+        for shop, cats in self.repo.shops.items():
+            for cat, records in cats.items():
+                for r in records:
+                    for p in (r.get("image_paths") or []):
+                        if p:
+                            imgs.append(p)
+        if not imgs:
+            grid.addWidget(QLabel("暂无评价图片"), 0, 0)
+        else:
+            cols = 5
+            for i, path in enumerate(imgs):
+                lbl = QLabel()
+                pm = scaled_pixmap(path, 140)
+                if pm:
+                    lbl.setPixmap(pm)
+                else:
+                    lbl.setText("无效")
+                lbl.setStyleSheet("border: 1px solid #dcdfe6;")
+                lbl.setToolTip(path)
+                grid.addWidget(lbl, i // cols, i % cols)
+        scroll.setWidget(host)
+        lay.addWidget(scroll)
+        dlg.exec()
+
     def on_add_shop(self):
         name, ok = QInputDialog.getText(self, "添加店铺", "请输入店铺名称:")
         if not (ok and name.strip()):

@@ -31,7 +31,7 @@ from PyQt6.QtCore import (
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QIcon, QKeySequence
+from PyQt6.QtGui import QIcon, QKeySequence, QPainter, QPalette
 
 def smart_split_spec(text: str) -> list:
     """智能把黏在一坨的规格文本拆成多条。
@@ -62,6 +62,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -131,6 +132,143 @@ _THUMB_STYLE = "background: transparent; border: none;"
 _PLACEHOLDER_STYLE = (
     "color:#A8ABB2; border:1px dashed #C0C4CC; border-radius:6px; background:transparent;"
 )
+
+
+class MarqueeLineEdit(QLineEdit):
+    """像素级平滑跑马灯 QLineEdit。
+
+    替代「移动光标位置」的伪滚动：用 QTimer 以 ~60fps 逐像素偏移，
+    重写 paintEvent 自己绘制文字，真正丝滑无顿挫。
+
+    交互：
+    - 常态（只读）：静止显示，文字超出时用省略号截断，不自动滚动
+    - 单击：切换跑马灯（开始/停止），仅对当前这一格生效
+    - 双击：进入编辑模式，可直接修改文字
+    - 编辑完成（回车或失去焦点）：回到只读模式
+    - 全局跑马灯模式（set_marquee_allowed(True)）：所有规格格自动开始滚动预览
+    """
+
+    _FRAME_MS = 16
+    _PX_PER_FRAME = 1
+    _PAUSE_MS = 1000
+    _HPAD = 6
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setCursor(Qt.CursorShape.IBeamCursor)
+        self.setStyleSheet("QLineEdit { border: none; background: transparent; }")
+        self._marquee_allowed = False
+        self._marquee_running = False
+        self._offset = 0
+        self._text_width = 0
+        self._tick_timer = QTimer(self)
+        self._tick_timer.setInterval(self._FRAME_MS)
+        self._tick_timer.timeout.connect(self._on_tick)
+        self._pause_timer = QTimer(self)
+        self._pause_timer.setSingleShot(True)
+        self._pause_timer.timeout.connect(self._on_pause_end)
+        self.editingFinished.connect(self._on_editing_finished)
+
+    def set_marquee_allowed(self, allowed: bool) -> None:
+        self._marquee_allowed = allowed
+        if allowed:
+            self.start_marquee()
+        else:
+            self.stop_marquee()
+
+    def start_marquee(self) -> None:
+        if self._marquee_running or not self.isReadOnly():
+            return
+        self._text_width = self.fontMetrics().horizontalAdvance(self.text())
+        if self._text_width <= self.width() - self._HPAD * 2:
+            return
+        self._marquee_running = True
+        self._offset = 0
+        self._tick_timer.start()
+        self.update()
+
+    def stop_marquee(self) -> None:
+        self._marquee_running = False
+        self._tick_timer.stop()
+        self._pause_timer.stop()
+        self._offset = 0
+        self.update()
+
+    def _on_tick(self) -> None:
+        if not self._marquee_running:
+            return
+        visible_w = self.width() - self._HPAD * 2
+        if self._offset >= self._text_width - visible_w + 30:
+            self._tick_timer.stop()
+            self._pause_timer.start(self._PAUSE_MS)
+            return
+        self._offset += self._PX_PER_FRAME
+        self.update()
+
+    def _on_pause_end(self) -> None:
+        if not self._marquee_running:
+            return
+        self._offset = 0
+        self._tick_timer.start()
+
+    def _on_editing_finished(self) -> None:
+        self.setReadOnly(True)
+        self.setCursor(Qt.CursorShape.IBeamCursor)
+        self.clearFocus()
+        if self._marquee_allowed:
+            self.start_marquee()
+
+    def paintEvent(self, event) -> None:
+        if self._marquee_running and self.isReadOnly():
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            palette = self.palette()
+            role = QPalette.ColorRole.Text if self.isEnabled() else QPalette.ColorRole.PlaceholderText
+            painter.setPen(palette.color(role))
+            painter.setFont(self.font())
+            fm = self.fontMetrics()
+            y = (self.height() + fm.ascent() - fm.descent()) // 2
+            x = self._HPAD - self._offset
+            painter.drawText(x, y, self.text())
+            painter.end()
+        else:
+            super().paintEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if self.isReadOnly() and event.button() == Qt.MouseButton.LeftButton:
+            if self._marquee_running:
+                self.stop_marquee()
+            else:
+                self.start_marquee()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if self.isReadOnly() and event.button() == Qt.MouseButton.LeftButton:
+            self.setReadOnly(False)
+            self.setFocus()
+            self.selectAll()
+            if self._marquee_running:
+                self.stop_marquee()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if not self.isReadOnly() and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.editingFinished.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._marquee_running:
+            self._text_width = self.fontMetrics().horizontalAdvance(self.text())
+            if self._text_width <= self.width() - self._HPAD * 2:
+                self.stop_marquee()
 
 
 class TableCell(QWidget):
@@ -382,6 +520,8 @@ class RecordTable(QTableWidget):
         self._is_filtered = False
         # 当前是否为「截图模式」（导出表单图片时置真：隐藏 ➕ / ▼ / 粘贴占位等交互控件）
         self._capture_mode = False
+        # 规格列全局跑马灯模式：双击规格列表头切换，开启后所有规格格自动滚动预览
+        self._spec_marquee_all = False
         # 列宽变化时防抖重算行高
         self._row_resize_timer = QTimer(self)
         self._row_resize_timer.setSingleShot(True)
@@ -485,6 +625,8 @@ class RecordTable(QTableWidget):
         # 表头右键：商品链接列弹出「获取所有商品信息」
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         header.customContextMenuRequested.connect(self._on_header_context_menu)
+        # 双击规格列表头：切换全局跑马灯模式（所有规格格一起滚动预览）
+        header.sectionDoubleClicked.connect(self._on_header_double_clicked)
         self.horizontalScrollBar().valueChanged.connect(self._position_header_check)
 
         # 表头开关：一个和文字差不多大的小按钮。未进入时显示“选择”，
@@ -577,6 +719,39 @@ class RecordTable(QTableWidget):
         chosen = menu.exec(self.horizontalHeader().viewport().mapToGlobal(pos))
         if chosen == act:
             self.batch_import_requested.emit()
+
+    def _on_header_double_clicked(self, logical_index: int) -> None:
+        "双击表头：规格列切换全局跑马灯模式。"
+        if logical_index <= 0:
+            return
+        field = RECORD_FIELDS[logical_index - 1]
+        if field == spec:
+            self.toggle_spec_marquee_all()
+
+    def toggle_spec_marquee_all(self) -> None:
+        "切换规格列全局跑马灯模式：开启后所有规格格自动滚动预览，关闭后全部停止。"
+        self._spec_marquee_all = not self._spec_marquee_all
+        self._apply_spec_marquee_all()
+        # 更新表头提示
+        header = self.horizontalHeader()
+        if self._spec_marquee_all:
+            header.setToolTip("规格列：双击关闭全局跑马灯预览")
+        else:
+            header.setToolTip("")
+
+    def _apply_spec_marquee_all(self) -> None:
+        "遍历所有规格格，应用全局跑马灯模式。"
+        spec_col = None
+        for c in range(1, self.columnCount()):
+            if c - 1 < len(RECORD_FIELDS) and RECORD_FIELDS[c - 1] == spec:
+                spec_col = c
+                break
+        if spec_col is None:
+            return
+        for row in range(self.rowCount()):
+            widget = self.cellWidget(row, spec_col)
+            if widget is not None and hasattr(widget, _marquee_edit):
+                widget._marquee_edit.set_marquee_allowed(self._spec_marquee_all)
 
     # ---------- 列顺序 / 列宽 ----------
     def _on_section_moved(self, logical_index: int, old_visual: int, new_visual: int) -> None:
@@ -1365,6 +1540,10 @@ class RecordTable(QTableWidget):
         cb = QComboBox()
         cb.setEditable(True)
         cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        # 用自定义跑马灯 QLineEdit 替换默认的：像素级平滑滚动、常态不自动滚
+        marquee_le = MarqueeLineEdit()
+        cb.setLineEdit(marquee_le)
+        cb._marquee_edit = marquee_le  # 保存引用，供全局跑马灯模式遍历
 
         # 合并选项：已抓取 SKU + 当前 spec 智能拆出，过滤 <4 字无意义项
         opts = []
@@ -1416,21 +1595,11 @@ class RecordTable(QTableWidget):
         cb.lineEdit().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         cb.lineEdit().customContextMenuRequested.connect(_lineedit_menu)
 
-        # 跑马灯：文字超出格子宽度时自动往左滚动（聚焦编辑时暂停）
-        le = cb.lineEdit()
-        marquee_timer = QTimer(cb)
-        marquee_timer.setInterval(120)
-        def _tick():
-            if le.hasFocus():
-                return
-            fm = le.fontMetrics()
-            if fm.horizontalAdvance(le.text()) > le.width() - 24:
-                pos = le.cursorPosition()
-                le.setCursorPosition(0 if pos >= len(le.text()) else pos + 1)
-        marquee_timer.timeout.connect(_tick)
-        marquee_timer.start()
-
+        # 跑马灯已由 MarqueeLineEdit 接管（像素级平滑滚动、常态不自动滚）
         self.setCellWidget(row, col, cb)
+        # 如果全局跑马灯模式已开启，新渲染的格子也自动开始滚动
+        if getattr(self, _spec_marquee_all, False):
+            marquee_le.set_marquee_allowed(True)
 
 
     def _set_spec(self, row: int, lbl, value: str):

@@ -1046,6 +1046,8 @@ class MainWindow(QMainWindow):
             act_del_shop = menu.addAction("删除店铺")
         elif kind == "category":
             menu.addSeparator()
+            act_new_record = menu.addAction("新建商品")
+            menu.addSeparator()
             act_add_cat = menu.addAction("新增产品分类")
             act_rename_cat = menu.addAction("重命名分类")
             act_del_cat = menu.addAction("删除分类")
@@ -1066,7 +1068,14 @@ class MainWindow(QMainWindow):
             # 🔴 分类名从 UserRole 取：节点文字带「（数量）」后缀（如 分类一（2）），
             # 拿后缀名去数据层当 old 名会找不到 → 重命名/删除静默失败
             category = node.data(0, Qt.ItemDataRole.UserRole) or node.text(0)
-            if chosen is act_add_cat:
+            if chosen is act_new_record:
+                # 切到该分类并打开新增商品对话框
+                self.shop_tree.setCurrentItem(node)
+                self.current_category = category
+                self.current_shop = shop
+                self.refresh_table()
+                self.on_add_record()
+            elif chosen is act_add_cat:
                 self.on_add_category(shop)
             elif chosen is act_rename_cat:
                 self.on_rename_category(shop, category)

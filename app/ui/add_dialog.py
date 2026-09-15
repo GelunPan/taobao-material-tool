@@ -5,6 +5,7 @@ record 为 None 时是新增模式；传入已有记录时预填字段，作为�
 布局：文本字段与图片分组上下排列，两列标签固定同宽，整体对齐规整。
 """
 from PyQt6.QtCore import Qt
+from .record_table import smart_split_spec
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -38,6 +39,76 @@ def _form_label(text: str) -> QLabel:
     label.setFixedWidth(_LABEL_WIDTH)
     label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     return label
+
+
+class SpecListEditor(QWidget):
+    """多规格编辑器：每行一个输入框，+按钮加行，×按钮删行。保存时用 / 拼接。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rows: list[QLineEdit] = []
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(6)
+        self._add_btn = QPushButton("+ 添加规格")
+        self._add_btn.setFixedWidth(100)
+        self._add_btn.setStyleSheet(
+            "QPushButton { background: #ecf5ff; color: #409EFF; border: 1px solid #b3d8ff; "
+            "border-radius: 4px; padding: 4px; }"
+            "QPushButton:hover { background: #409EFF; color: white; }"
+        )
+        self._add_btn.clicked.connect(lambda: self._add_row())
+        self._lay.addWidget(self._add_btn)
+
+    def _add_row(self, value: str = "") -> None:
+        row_w = QWidget()
+        h = QHBoxLayout(row_w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        edit = QLineEdit(value)
+        edit.setPlaceholderText("输入一条规格")
+        h.addWidget(edit, 1)
+        btn_del = QPushButton("×")
+        btn_del.setFixedSize(24, 24)
+        btn_del.setStyleSheet(
+            "QPushButton { background: #f56c6c; color: white; border: none; border-radius: 12px; font-weight: bold; }"
+            "QPushButton:hover { background: #f78989; }"
+        )
+        btn_del.clicked.connect(lambda: self._remove_row(row_w))
+        h.addWidget(btn_del)
+        # 插入到 + 按钮之前
+        self._lay.insertWidget(self._lay.count() - 1, row_w)
+        self._rows.append(edit)
+
+    def _remove_row(self, row_w: QWidget) -> None:
+        for i, w in enumerate(self._rows):
+            if w.parent() is row_w:
+                self._rows.pop(i)
+                break
+        row_w.deleteLater()
+
+    def set_spec(self, text: str) -> None:
+        """从拼接文本加载，按智能分割拆成多行"""
+        # 清空现有
+        while self._lay.count() > 1:
+            item = self._lay.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._rows.clear()
+        pieces = smart_split_spec(text or "")
+        for piece in pieces:
+            self._add_row(piece)
+        if not pieces:
+            self._add_row("")
+
+    def spec_text(self) -> str:
+        pieces = []
+        for e in self._rows:
+            v = e.text().strip()
+            if v:
+                pieces.append(v)
+        return " / ".join(pieces)
 
 
 class SingleImagePicker(QWidget):
@@ -212,7 +283,7 @@ class AddRecordDialog(QDialog):
         form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         self.product_id_input = QLineEdit()
-        self.spec_input = QLineEdit()
+        self.spec_input = SpecListEditor()
         self.title_input = QLineEdit()
         self.helper_input = QLineEdit()
         self.product_url_input = QLineEdit()
@@ -270,7 +341,7 @@ class AddRecordDialog(QDialog):
     def _load_record(self, record: dict) -> None:
         """预填已有记录的内容（修改模式）"""
         self.product_id_input.setText(record.get("product_id", ""))
-        self.spec_input.setText(record.get("spec", ""))
+        self.spec_input.set_spec(record.get("spec", ""))
         self.title_input.setText(record.get("title", ""))
         self.helper_input.setText(record.get("helper", ""))
         self.review_input.setPlainText(record.get("review", ""))
@@ -296,7 +367,7 @@ class AddRecordDialog(QDialog):
         return {
             "product_id": self.product_id_input.text().strip(),
             "spec_image": [self.spec_picker.path] if self.spec_picker.path else [],
-            "spec": self.spec_input.text().strip(),
+            "spec": self.spec_input.spec_text(),
             "title": self.title_input.text().strip(),
             "link_image": [self.link_picker.path] if self.link_picker.path else [],
             "helper": self.helper_input.text().strip(),

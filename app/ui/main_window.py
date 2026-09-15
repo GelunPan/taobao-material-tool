@@ -1036,7 +1036,10 @@ class MainWindow(QMainWindow):
             self.shop_tree.setCurrentItem(item)
         kind = self._current_item_kind()
         menu = QMenu(self)
-        act_add_shop = menu.addAction("新增店铺")
+        if kind == "shop":
+            act_add_shop = menu.addAction("新增店铺")
+        else:
+            act_add_shop = None
         if kind == "shop":
             shop = self.shop_tree.currentItem().text(0)
             menu.addSeparator()
@@ -1054,7 +1057,7 @@ class MainWindow(QMainWindow):
         chosen = menu.exec(self.shop_tree.viewport().mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is act_add_shop:
+        if act_add_shop is not None and chosen is act_add_shop:
             self.on_add_shop()
         elif kind == "shop" and chosen is act_add_cat:
             self.on_add_category(shop)

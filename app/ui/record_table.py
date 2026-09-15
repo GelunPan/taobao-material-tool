@@ -1376,6 +1376,25 @@ class RecordTable(QTableWidget):
         cb.blockSignals(False)
         cb.lineEdit().editingFinished.connect(lambda: _on_pick(cb.currentText()))
 
+        # 把 QLineEdit 默认英文右键菜单换成中文
+        from PyQt6.QtWidgets import QMenu
+        def _lineedit_menu(pos):
+            le = cb.lineEdit()
+            menu = le.createStandardContextMenu()
+            for a in menu.actions():
+                txt = a.text()
+                map_ = {
+                    "Undo": "撤销", "Redo": "重做",
+                    "Cut": "剪切", "Copy": "复制", "Paste": "粘贴",
+                    "Delete": "删除", "Select All": "全选",
+                }
+                for k, v in map_.items():
+                    if k in txt:
+                        a.setText(txt.replace(k, v))
+            menu.exec(le.viewport().mapToGlobal(pos) if hasattr(le, "viewport") else le.mapToGlobal(pos))
+        cb.lineEdit().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        cb.lineEdit().customContextMenuRequested.connect(_lineedit_menu)
+
         self.setCellWidget(row, col, cb)
 
 

@@ -314,8 +314,10 @@ class SpecComboDelegate(QStyledItemDelegate):
             self._view.viewport().update()
 
     def paint(self, painter, option, index) -> None:
-        # 先用默认风格绘制背景（选中/悬停高亮等）
+        # 先用默认风格绘制背景（选中/悬停高亮等），但不画文字——文字由下方跑马灯逻辑自绘，
+        # 否则默认文字和跑马灯文字会双重叠加。
         self.initStyleOption(option, index)
+        option.text = ""  # 关键：清空文字，drawControl 只画背景不画文字
         from PyQt6.QtWidgets import QStyle, QApplication
         style = option.widget.style() if option.widget is not None else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, option, painter, option.widget)

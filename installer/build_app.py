@@ -88,16 +88,24 @@ def build_app():
             except Exception as e:
                 print("[warn] 跳过删除调试文件（不影响功能）:", dbg, "->", e)
 
-    # 打包示例店铺数据：data.json + images
+    # 打包示例店铺数据：只保留"示例"店铺，其他测试店铺不打包
     seed_data = os.path.join(ROOT, "data", "data.json")
     seed_images = os.path.join(ROOT, "data", "images")
     target_data = os.path.join(DIST_APP, "data")
     target_images = os.path.join(target_data, "images")
     os.makedirs(target_images, exist_ok=True)
     if os.path.isfile(seed_data):
-        import shutil
-        shutil.copy2(seed_data, os.path.join(target_data, "data.json"))
-        print("已打包示例数据：data.json")
+        import json, shutil
+        with open(seed_data, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        shops = data.get("shops", {})
+        sample_shops = {k: v for k, v in shops.items() if k == "示例"}
+        if not sample_shops:
+            print("[warn] 没找到名为「示例」的店铺，将打包空数据")
+        data["shops"] = sample_shops
+        with open(os.path.join(target_data, "data.json"), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print("已打包示例数据：只保留「示例」店铺")
     if os.path.isdir(seed_images):
         import shutil
         for f in os.listdir(seed_images):

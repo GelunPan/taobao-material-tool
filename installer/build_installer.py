@@ -41,7 +41,7 @@ def zip_app_folder(src_dir: str, zip_path: str):
 
 
 def build_installer_exe():
-    out_name = "win10_x64_taobaotools_V1.1"
+    out_name = APP_NAME + "安装程序"
     # 用独立临时 distpath/workpath 构建，避免 PyInstaller --noconfirm 删除旧 exe
     # 触发 safe-delete 硬阻断（删除/重命名被环境拦截，只有写/复制放行）
     tmp = os.path.join(ROOT, "dist", "_installer_tmp")
@@ -68,7 +68,7 @@ def build_installer_exe():
     # shutil.copy 直接走 OS 调用覆盖（写操作，不触发 safe-delete，且比 cmd copy 可靠）
     shutil.copy(src_exe, exe)
     print("安装程序已生成：", exe, "%.1f MB" % (os.path.getsize(exe) / 1e6 if os.path.isfile(exe) else 0))
-    print("发给客户：dist/win10_x64_taobaotools_V1.1.exe")
+    print("发给客户：dist/%s安装程序.exe" % APP_NAME)
     _safe_remove(tmp)
     return exe
 

@@ -420,6 +420,17 @@ class MainWindow(QMainWindow):
         """
         return self.repo.shop_colors
 
+    def _color_key(self, shop: str, category: str) -> str:
+        """颜色存储 key：店铺名|分类名（每个分类独立配色）。"""
+        return f"{shop}|{category}"
+
+    def _get_color(self, shop: str, category: str) -> dict:
+        """读取某分类的配色：优先用 店铺|分类 的独立配色，不存在则回退到店铺级旧配色。"""
+        key = self._color_key(shop, category)
+        if key in self._shop_label_colors:
+            return self._shop_label_colors[key]
+        return self._shop_label_colors.get(shop, {"bg": None, "text": None})
+
     # ==================== 界面搭建 ====================
     def init_ui(self):
         central_widget = QWidget()
@@ -686,6 +697,7 @@ class MainWindow(QMainWindow):
         self.table.link_fetch_requested.connect(self.on_link_fetch)
         self.table.link_fill_requested.connect(self.on_link_fill)
         self.table.batch_import_requested.connect(self.on_batch_import)
+        self.table.spec_option_added.connect(self.on_spec_option_added)
         right_layout.addWidget(self.table)
 
         tip_label = QLabel("提示：点单元格只选该格，点顶部字段选中整列、点左侧行号选中整行；Ctrl+A 全选记录；右键删除/复制选中的记录；Ctrl+Z 撤销上一步；图片格双击查看大图、Ctrl+C 复制、Del 删除、Ctrl+V 粘贴；右键更多操作")
@@ -1017,16 +1029,17 @@ class MainWindow(QMainWindow):
         persist=True 时写入 data.json（菜单改色）；切换到已有店铺时传 False，
         只是把存下来的颜色套回标签，不必因此写一次盘。"""
         cur = {"bg": None, "text": None}
-        if self.current_shop:
-            cur = self._shop_label_colors.get(self.current_shop, {"bg": None, "text": None})
+        if self.current_shop and self.current_category:
+            key = self._color_key(self.current_shop, self.current_category)
+            cur = self._get_color(self.current_shop, self.current_category).copy()
             if replace_bg:
                 cur["bg"] = bg_color
             if replace_text:
                 cur["text"] = text_color
             if cur["bg"] is None and cur["text"] is None:
-                self._shop_label_colors.pop(self.current_shop, None)
+                self._shop_label_colors.pop(key, None)
             else:
-                self._shop_label_colors[self.current_shop] = cur
+                self._shop_label_colors[key] = cur
         # 实时应用到标签
         parts = [self._shop_label_base_style]
         if cur.get("bg"):
@@ -1064,7 +1077,7 @@ class MainWindow(QMainWindow):
         self.current_shop = shop
         self.current_category = category
         self.current_shop_label.setText(shop)
-        saved = self._shop_label_colors.get(shop, {"bg": None, "text": None})
+        saved = self._get_color(shop, category)
         self._apply_shop_label_style(bg_color=saved.get("bg"), text_color=saved.get("text"),
                                      persist=False)
 
@@ -1481,6 +1494,24 @@ class MainWindow(QMainWindow):
                 self.repo.set_record_field(self.current_shop, self.current_category,
                                            record_index, "spec_options", opts)
         self.table._adjust_row_heights()
+
+    def on_spec_option_added(self, row, option_text):
+        """规格列右键新增规格：追加到该记录的 spec_options，并刷新下拉列表。"""
+        if not self.current_shop or not self.current_category:
+            return
+        record_index = self.table.rendered_index(row)
+        with self._undo_step("新增规格"):
+            recs = self.repo.get_records(self.current_shop, self.current_category)
+            if record_index >= len(recs):
+                return
+            rec = recs[record_index]
+            opts = list(rec.get("spec_options") or [])
+            if option_text not in opts:
+                opts.append(option_text)
+            self.repo.set_record_field(self.current_shop, self.current_category,
+                                       record_index, "spec_options", opts)
+        # 刷新该行规格列的下拉选项（只重渲该行，不整表刷新，避免卡顿）
+        self.refresh_table()
 
     def on_paste_image_requested(self, row, col, field_name):
         """处理表格中的粘贴图片请求：保存图片并覆盖更新记录"""
@@ -2095,7 +2126,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         # 顶部标题带的颜色 = 表单里这个店铺名设置的填充色 / 字体色
-        colors = self._shop_label_colors.get(self.current_shop) or {}
+        colors = self._get_color(self.current_shop, self.current_category) or {}
         error = ""
         result = None
         try:

@@ -611,6 +611,8 @@ class RecordTable(QTableWidget):
     batch_import_requested = pyqtSignal()  # 表头右键：一键获取当前店铺所有商品信息
     # 点击底部➕号按钮：请求添加一行空白记录
     add_row_requested = pyqtSignal()
+    # 规格列右键：新增一个规格选项（渲染行、新规格名）
+    spec_option_added = pyqtSignal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1660,10 +1662,10 @@ class RecordTable(QTableWidget):
         seen = set()
         for o in (options or []):
             o = (o or "").strip()
-            if len(o) >= 4 and o not in seen:
+            if len(o) >= 2 and o not in seen:
                 seen.add(o); opts.append(o)
         for o in smart_split_spec(current):
-            if len(o) >= 4 and o not in seen:
+            if len(o) >= 2 and o not in seen:
                 seen.add(o); opts.append(o)
 
         # 当前值智能清理：如果是长拼接，取第一款；去掉"商品规格:"前缀
@@ -1686,8 +1688,8 @@ class RecordTable(QTableWidget):
         cb.blockSignals(False)
         cb.lineEdit().editingFinished.connect(lambda: _on_pick(cb.currentText()))
 
-        # 把 QLineEdit 默认英文右键菜单换成中文
-        from PyQt6.QtWidgets import QMenu
+        # 规格列右键：新增规格 + 编辑菜单（中文）
+        from PyQt6.QtWidgets import QMenu, QInputAction
         def _lineedit_menu(pos):
             le = cb.lineEdit()
             menu = le.createStandardContextMenu()
@@ -1701,7 +1703,16 @@ class RecordTable(QTableWidget):
                 for k, v in map_.items():
                     if k in txt:
                         a.setText(txt.replace(k, v))
-            menu.exec(le.viewport().mapToGlobal(pos) if hasattr(le, "viewport") else le.mapToGlobal(pos))
+            menu.addSeparator()
+            add_action = menu.addAction("新增规格")
+            add_action.setIcon(QIcon())
+            menu.addSeparator()
+            action = menu.exec(le.viewport().mapToGlobal(pos) if hasattr(le, "viewport") else le.mapToGlobal(pos))
+            if action == add_action:
+                from PyQt6.QtWidgets import QInputDialog
+                text, ok = QInputDialog.getText(None, "新增规格", "请输入规格名称：")
+                if ok and text.strip():
+                    self.spec_option_added.emit(row, text.strip())
         cb.lineEdit().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         cb.lineEdit().customContextMenuRequested.connect(_lineedit_menu)
 

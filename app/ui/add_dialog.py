@@ -110,6 +110,10 @@ class SpecListEditor(QWidget):
                 pieces.append(v)
         return " / ".join(pieces)
 
+    def spec_options(self) -> list:
+        """返回所有非空规格列表（用于存 spec_options，下拉框能选到每一款）。"""
+        return [e.text().strip() for e in self._rows if e.text().strip()]
+
 
 class SingleImagePicker(QWidget):
     """单张图片选择器：缩略图 + 选择/移除按钮，不显示文件名"""
@@ -368,6 +372,7 @@ class AddRecordDialog(QDialog):
             "product_id": self.product_id_input.text().strip(),
             "spec_image": [self.spec_picker.path] if self.spec_picker.path else [],
             "spec": self.spec_input.spec_text(),
+            "spec_options": self.spec_input.spec_options(),
             "title": self.title_input.text().strip(),
             "link_image": [self.link_picker.path] if self.link_picker.path else [],
             "helper": self.helper_input.text().strip(),

@@ -48,6 +48,21 @@ def default_install_dir() -> str:
 
 
 def desktop_path() -> str:
+    """获取当前用户真实桌面路径。
+
+    优先用 Windows 官方 API SHGetFolderPathW(CSIDL_DESKTOP)，能正确识别
+    OneDrive 重定向（C:\\Users\\xxx\\OneDrive\\Desktop）、企业组策略自定义
+    桌面等场景；失败时回退到 USERPROFILE\\Desktop。
+    """
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(260)
+        # CSIDL_DESKTOP = 0x0000，SHGFP_TYPE_CURRENT = 0
+        hr = ctypes.windll.shell32.SHGetFolderPathW(None, 0x0000, None, 0, buf)
+        if hr == 0 and buf.value:
+            return buf.value
+    except Exception:
+        pass
     return os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), "Desktop")
 
 

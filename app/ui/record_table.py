@@ -735,6 +735,8 @@ class RecordTable(QTableWidget):
                 + 2 * TABLE_CELL_PAD
             )
             return max(text_w, content_w + TABLE_ITEM_PAD_H + TABLE_GRID)
+        if field == "spec":
+            return max(text_w, 180)  # 规格列加宽：要显示完整 SKU 选项
         return max(text_w, 88)  # 普通文本列不低于 88px：短ID/短规格一行不省略
 
     def _auto_fit_columns(self) -> None:

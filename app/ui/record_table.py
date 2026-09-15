@@ -1365,12 +1365,8 @@ class RecordTable(QTableWidget):
         cb.addItems(opts)
         cb.setCurrentText(cur)
 
-        # 只去掉边框，保留系统默认下拉箭头（不覆盖 drop-down）
-        cb.setStyleSheet("""
-            QComboBox { border: none; background: transparent; padding-right: 2px; }
-            QComboBox QAbstractItemView { border: 1px solid #dcdfe6; background: white;
-                selection-background-color: #ecf5ff; selection-color: #409EFF; outline: 0px; }
-        """)
+        # 用默认样式，下拉箭头自然显示
+        cb.setStyleSheet("QComboBox QAbstractItemView { border: 1px solid #dcdfe6; background: white; selection-background-color: #ecf5ff; selection-color: #409EFF; outline: 0px; }")
 
         def _on_pick(text):
             text = (text or "").strip()

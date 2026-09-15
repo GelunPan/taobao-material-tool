@@ -4,6 +4,7 @@
 """
 import os
 
+from ..config import IMAGES_DIR
 from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QImageReader, QPixmap, QPixmapCache
 
@@ -12,9 +13,20 @@ QPixmapCache.setCacheLimit(64 * 1024)
 
 
 def scaled_pixmap(image_path: str, max_size: int):
-    """按最长边 max_size 等比缩放解码图片，返回 QPixmap；失败返回 None"""
-    if not image_path or not os.path.exists(image_path):
+    """按最长边 max_size 等比缩放解码图片，返回 QPixmap；失败返回 None
+
+    路径不存在时自动 fallback 到 IMAGES_DIR 下的同名文件（打包环境下
+    data.json 里的绝对路径会失效，通过此机制在用户端仍能正常加载图片）。
+    """
+    if not image_path:
         return None
+    if not os.path.exists(image_path):
+        fname = os.path.basename(image_path)
+        fallback = os.path.join(str(IMAGES_DIR), fname)
+        if os.path.exists(fallback):
+            image_path = fallback
+        else:
+            return None
     cache_key = f"{image_path}@{max_size}"
     cached = QPixmapCache.find(cache_key)
     if cached is not None:

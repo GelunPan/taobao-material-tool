@@ -103,7 +103,8 @@ def build_app():
         if not sample_shops:
             print("[warn] 没找到名为「示例」的店铺，将打包空数据")
         data["shops"] = sample_shops
-        # 收集示例数据引用的所有图片，并把绝对路径转为相对路径（只保留文件名）
+        # 收集示例数据引用的所有图片（只复制被引用的，不复制整个 images 目录）
+        # 注意：data.json 里保持原始绝对路径不变，由应用端图片加载时做 fallback
         image_fields = ["spec_image", "link_image", "image_paths"]
         referenced_images = set()
         for shop_name, shop_data in sample_shops.items():
@@ -119,16 +120,13 @@ def build_app():
                         imgs = rec.get(field, [])
                         if not isinstance(imgs, list):
                             continue
-                        converted = []
                         for img in imgs:
                             if not img:
                                 continue
                             fname = os.path.basename(img)
-                            converted.append(fname)
                             src = img if os.path.isfile(img) else os.path.join(seed_images, fname)
                             if os.path.isfile(src):
                                 referenced_images.add((src, fname))
-                        rec[field] = converted
         # 只复制被引用的图片（而非整个 images 目录）
         copied = 0
         for src, fname in referenced_images:

@@ -1689,7 +1689,7 @@ class RecordTable(QTableWidget):
         cb.lineEdit().editingFinished.connect(lambda: _on_pick(cb.currentText()))
 
         # 规格列右键：新增规格 + 编辑菜单（中文）
-        from PyQt6.QtWidgets import QMenu, QInputAction
+        from PyQt6.QtWidgets import QMenu
         def _lineedit_menu(pos):
             le = cb.lineEdit()
             menu = le.createStandardContextMenu()

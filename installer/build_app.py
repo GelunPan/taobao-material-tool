@@ -88,6 +88,25 @@ def build_app():
             except Exception as e:
                 print("[warn] 跳过删除调试文件（不影响功能）:", dbg, "->", e)
 
+    # 打包示例店铺数据：data.json + images
+    seed_data = os.path.join(ROOT, "data", "data.json")
+    seed_images = os.path.join(ROOT, "data", "images")
+    target_data = os.path.join(DIST_APP, "data")
+    target_images = os.path.join(target_data, "images")
+    os.makedirs(target_images, exist_ok=True)
+    if os.path.isfile(seed_data):
+        import shutil
+        shutil.copy2(seed_data, os.path.join(target_data, "data.json"))
+        print("已打包示例数据：data.json")
+    if os.path.isdir(seed_images):
+        import shutil
+        for f in os.listdir(seed_images):
+            src = os.path.join(seed_images, f)
+            dst = os.path.join(target_images, f)
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
+        print("已打包示例图片：images/")
+
     print("主程序已生成：", DIST_APP)
 
 

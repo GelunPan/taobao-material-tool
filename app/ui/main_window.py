@@ -705,6 +705,7 @@ class MainWindow(QMainWindow):
         self.act_product_copy = self.product_menu.addAction("复制商品")
         self.act_product_delete = self.product_menu.addAction("删除商品")
         self.btn_product.setMenu(self.product_menu)
+        self.table.header_button_clicked.connect(lambda: self.product_menu.exec(self.btn_product.mapToGlobal(self.btn_product.rect().bottomLeft())))
         # 「导出」：一个入口，三种出口（Excel 表格 / 表单整表图片 / 截图历史）
         self.btn_export = QPushButton("导出 ▾")
         self.btn_export.setToolTip("导出当前店铺：Excel 表格 / 表单图片 / 查看截图历史")

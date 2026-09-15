@@ -22,7 +22,7 @@
 """
 import os
 
-from PyQt6.QtCore import (
+from PyQt6.QtCore import (pyqtSignal,
     QEasingCurve,
     QPropertyAnimation,
     QRect,
@@ -331,6 +331,7 @@ class _SelectAllCheck(QCheckBox):
 
 
 class RecordTable(QTableWidget):
+    header_button_clicked = pyqtSignal()
     """素材记录表格：第 0 列为勾选列（默认隐藏），其后按 RECORD_FIELDS 顺序渲染记录"""
 
     # 用户双击图片占位区或按 Ctrl+V / 右键粘贴，请求粘贴图片（行、列、字段名）
@@ -560,11 +561,8 @@ class RecordTable(QTableWidget):
         self._position_header_check()
 
     def _on_header_btn_clicked(self) -> None:
-        """表头开关按钮：未进入→进入批量选择；已进入→退出（取消选择）"""
-        if self.isColumnHidden(0):
-            self._enter_selection_mode()
-        else:
-            self._exit_selection_mode()
+        """左上角按钮：弹编辑菜单（新增/修改/复制/删除/选择）"""
+        self.header_button_clicked.emit()
 
     def _on_header_context_menu(self, pos):
         """表头右键：右键落在「商品链接」列上时，弹「获取所有商品信息」。"""

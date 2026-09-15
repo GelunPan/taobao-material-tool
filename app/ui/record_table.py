@@ -1416,6 +1416,20 @@ class RecordTable(QTableWidget):
         cb.lineEdit().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         cb.lineEdit().customContextMenuRequested.connect(_lineedit_menu)
 
+        # 跑马灯：文字超出格子宽度时自动往左滚动（聚焦编辑时暂停）
+        le = cb.lineEdit()
+        marquee_timer = QTimer(cb)
+        marquee_timer.setInterval(120)
+        def _tick():
+            if le.hasFocus():
+                return
+            fm = le.fontMetrics()
+            if fm.horizontalAdvance(le.text()) > le.width() - 24:
+                pos = le.cursorPosition()
+                le.setCursorPosition(0 if pos >= len(le.text()) else pos + 1)
+        marquee_timer.timeout.connect(_tick)
+        marquee_timer.start()
+
         self.setCellWidget(row, col, cb)
 
 

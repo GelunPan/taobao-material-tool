@@ -31,7 +31,7 @@ from PyQt6.QtCore import (
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QIcon, QKeySequence, QPainter, QPalette
+from PyQt6.QtGui import QIcon, QKeySequence, QPainter, QPalette, QFont
 
 def smart_split_spec(text: str) -> list:
     """智能把黏在一坨的规格文本拆成多条。
@@ -58,6 +58,7 @@ import re
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -70,6 +71,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QTableWidgetSelectionRange,
     QVBoxLayout,
+    QStyledItemDelegate,
     QWidget,
 )
 
@@ -269,6 +271,113 @@ class MarqueeLineEdit(QLineEdit):
             self._text_width = self.fontMetrics().horizontalAdvance(self.text())
             if self._text_width <= self.width() - self._HPAD * 2:
                 self.stop_marquee()
+
+
+class SpecComboDelegate(QStyledItemDelegate):
+    """规格下拉列表的跑马灯 delegate：展开后所有选项文字自动向左无缝滚动预览。
+
+    用一个共享偏移量驱动所有 item，文字超出宽度时无缝循环滚动（右边紧接再绘一遍），
+    不会出现空白期；文字没超出时正常左对齐静止。
+    """
+
+    _FRAME_MS = 30       # ~33fps，下拉列表不需要太高刷新率
+    _PX_PER_FRAME = 1    # 每帧移动 1px
+    _LOOP_GAP = 50       # 无缝循环时两遍文字之间的间距（像素）
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._offset = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._FRAME_MS)
+        self._timer.timeout.connect(self._on_tick)
+        self._view = None  # 关联的 QListView，用于触发重绘
+
+    def bind_view(self, view) -> None:
+        """绑定下拉列表的 view，跑马灯时通过它触发 viewport 重绘。"""
+        self._view = view
+
+    def start(self) -> None:
+        """开始跑马灯。"""
+        self._offset = 0
+        self._timer.start()
+
+    def stop(self) -> None:
+        """停止跑马灯并复位。"""
+        self._timer.stop()
+        self._offset = 0
+        if self._view is not None:
+            self._view.viewport().update()
+
+    def _on_tick(self) -> None:
+        self._offset += self._PX_PER_FRAME
+        if self._view is not None:
+            self._view.viewport().update()
+
+    def paint(self, painter, option, index) -> None:
+        # 先用默认风格绘制背景（选中/悬停高亮等）
+        self.initStyleOption(option, index)
+        from PyQt6.QtWidgets import QStyle, QApplication
+        style = option.widget.style() if option.widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, option, painter, option.widget)
+
+        # 绘制跑马灯文字
+        text = index.data(Qt.ItemDataRole.DisplayRole)
+        if not text:
+            return
+
+        painter.save()
+        # 文字区域：左右各留 8px 边距
+        text_rect = option.rect.adjusted(8, 0, -8, 0)
+        painter.setClipRect(text_rect)
+
+        # 文字颜色：选中态用高亮文字色，否则用普通文字色
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.setPen(option.palette.color(QPalette.ColorRole.HighlightedText))
+        elif option.state & QStyle.StateFlag.State_MouseOver:
+            painter.setPen(option.palette.color(QPalette.ColorRole.ButtonText))
+        else:
+            painter.setPen(option.palette.color(QPalette.ColorRole.Text))
+        painter.setFont(option.font)
+
+        fm = painter.fontMetrics()
+        text_width = fm.horizontalAdvance(text)
+        # 垂直居中
+        y = text_rect.center().y() + (fm.ascent() - fm.descent()) // 2
+
+        if text_width > text_rect.width():
+            # 文字超出：无缝循环滚动
+            total = text_width + self._LOOP_GAP
+            x = text_rect.left() - (self._offset % total)
+            # 绘制多遍保证充满整个可见区域
+            while x < text_rect.right():
+                painter.drawText(x, y, text)
+                x += total
+        else:
+            # 文字没超出：正常左对齐
+            painter.drawText(text_rect.left(), y, text)
+
+        painter.restore()
+
+
+class SpecComboBox(QComboBox):
+    """规格下拉框：展开下拉列表时自动开启选项跑马灯，收起时停止。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._marquee_delegate = SpecComboDelegate(self)
+        # 给下拉列表设置自定义 delegate
+        self.view().setItemDelegate(self._marquee_delegate)
+        self._marquee_delegate.bind_view(self.view())
+
+    def showPopup(self) -> None:
+        """展开下拉列表：启动跑马灯。"""
+        super().showPopup()
+        self._marquee_delegate.start()
+
+    def hidePopup(self) -> None:
+        """收起下拉列表：停止跑马灯。"""
+        super().hidePopup()
+        self._marquee_delegate.stop()
 
 
 class TableCell(QWidget):
@@ -1536,8 +1645,7 @@ class RecordTable(QTableWidget):
 
     def _render_spec_cell(self, row: int, col: int, current: str, options: list) -> None:
         """规格列：Excel 风格下拉框，右侧小箭头弹列表，选哪款显示哪款。"""
-        from PyQt6.QtWidgets import QComboBox
-        cb = QComboBox()
+        cb = SpecComboBox()  # 自定义：展开下拉列表时选项自动跑马灯
         cb.setEditable(True)
         cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         # 用自定义跑马灯 QLineEdit 替换默认的：像素级平滑滚动、常态不自动滚

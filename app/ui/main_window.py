@@ -397,6 +397,7 @@ class MainWindow(QMainWindow):
         self._undo = UndoStack()      # Ctrl+Z：数据快照式撤销栈
         self.current_shop = None
         self.current_category = None   # 当前选中的产品分类（表格/导出/新增都只针对它）
+        self._col_widths_memory = {}  # 每个店铺独立记忆列宽
         self._all_expanded = True  # 店铺树整体展开状态
         # 左侧栏折叠状态与展开宽度记忆
         self._shop_collapsed = False
@@ -806,7 +807,7 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QScrollArea, QGridLayout, QLabel
         from .image_utils import scaled_pixmap
         dlg = QDialog(self)
-        dlg.setWindowTitle("图片管理（所有评价图片）")
+        dlg.setWindowTitle("图片管理（此功能开发中，敬请期待）")
         dlg.resize(900, 600)
         lay = QVBoxLayout(dlg)
         scroll = QScrollArea()
@@ -1058,6 +1059,8 @@ class MainWindow(QMainWindow):
 
     def _set_current(self, shop: str, category: str) -> None:
         """记录当前店铺+分类，并把右侧标题、店铺名配色一起带上（一个入口，不散落）"""
+        if self.current_shop and hasattr(self, "table"):
+            self._col_widths_memory[self.current_shop] = self.table.save_column_widths()
         self.current_shop = shop
         self.current_category = category
         self.current_shop_label.setText(shop)
@@ -1213,6 +1216,10 @@ class MainWindow(QMainWindow):
 
     # ==================== 素材记录管理 ====================
     def refresh_table(self):
+        # 恢复当前店铺记忆的列宽（如果有）
+        saved_w = self._col_widths_memory.get(self.current_shop)
+        if saved_w:
+            QTimer.singleShot(50, lambda: self.table.load_column_widths(saved_w))
         """按当前店铺+产品分类重新渲染表格"""
         records = self._records() if self.current_shop else []
         self.table.render(records)

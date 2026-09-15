@@ -588,6 +588,27 @@ class RecordTable(QTableWidget):
             header.blockSignals(False)
         self._position_select_all_check()
 
+    def save_column_widths(self) -> dict:
+        """导出当前所有列宽（供切店铺前保存）"""
+        widths = {}
+        for c in range(self.columnCount()):
+            if not self.isColumnHidden(c):
+                widths[c] = self.columnWidth(c)
+        return widths
+
+    def load_column_widths(self, widths: dict) -> None:
+        """从 dict 恢复列宽（切店铺后应用）"""
+        if not widths:
+            return
+        self._layout_guard = True
+        try:
+            for c, w in widths.items():
+                if c < self.columnCount():
+                    self.setColumnWidth(c, w)
+                    self._user_resized.add(c)
+        finally:
+            self._layout_guard = False
+
     def _on_section_resized(self, logical_index: int, _old: int, _new: int) -> None:
         self._position_header_check()
         if self._layout_guard:

@@ -541,10 +541,9 @@ class MainWindow(QMainWindow):
         )
         self.act_add_shop = self.shop_mgmt_menu.addAction("➕ 新增店铺")
         self.act_img_mgmt = self.shop_mgmt_menu.addAction("🖼 图片管理")
-        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QCursor
         def _show_menu():
-            pos = self.btn_shop_mgmt.mapToGlobal(QPoint(self.btn_shop_mgmt.width() - 100, -10))
-            self.shop_mgmt_menu.exec(pos)
+            self.shop_mgmt_menu.exec(QCursor.pos())
         self.btn_shop_mgmt.clicked.connect(_show_menu)
         self.act_add_shop.triggered.connect(lambda: self.on_add_shop())
         self.act_img_mgmt.triggered.connect(self._open_image_manager)

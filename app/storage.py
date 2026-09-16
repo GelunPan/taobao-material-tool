@@ -26,6 +26,8 @@ class ShopRepository:
         self.images_dir = Path(images_dir)
         # {店铺名: {分类名: [素材记录]}}
         self.shops: dict[str, dict[str, list[dict]]] = {}
+        self.image_categories: list = []
+        self.image_category_map: dict = {}
         self.image_counter = 0                   # 图片文件名计数器
         # {店铺名: {"bg": "#RRGGBB"|None, "text": "#RRGGBB"|None}}：
         # 店铺名的填充色/字体色。导出表单图片的标题带会用它，必须持久化，
@@ -42,6 +44,8 @@ class ShopRepository:
             with open(self.data_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self.shops = data.get("shops", {})
+            self.image_categories = data.get("image_categories", [])
+            self.image_category_map = data.get("image_category_map", {})
             self.image_counter = int(data.get("image_counter", 0))
             self.shop_colors = data.get("shop_colors", {}) or {}
             self._migrate()
@@ -85,6 +89,8 @@ class ShopRepository:
             "shops": self.shops,
             "image_counter": self.image_counter,
             "shop_colors": self.shop_colors,
+            "image_categories": getattr(self, "image_categories", []),
+            "image_category_map": getattr(self, "image_category_map", {}),
         }
         with open(self.data_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

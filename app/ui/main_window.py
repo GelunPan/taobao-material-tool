@@ -830,9 +830,8 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(dlg)
 
         # 数据：分类列表 + 图片->分类映射
-        data = self.repo._data
-        cats = data.setdefault("image_categories", [])
-        cat_map = data.setdefault("image_category_map", {})
+        cats = self.repo.image_categories
+        cat_map = self.repo.image_category_map
         current_cat = {"name": "全部图片"}  # 当前选中分类
 
         # ===== 左右布局 =====

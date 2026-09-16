@@ -828,11 +828,18 @@ class MainWindow(QMainWindow):
         grid = QGridLayout(host)
         grid.setSpacing(8)
         imgs = []
+        seen = set()
         for shop, cats in self.repo.shops.items():
             for cat, records in cats.items():
                 for r in records:
                     for p in (r.get("image_paths") or []):
-                        if p:
+                        if not p:
+                            continue
+                        base = os.path.basename(p).lower()
+                        if base.startswith("tb_sku_") or base.startswith("tb_main_"):
+                            continue
+                        if p not in seen:
+                            seen.add(p)
                             imgs.append(p)
         if not imgs:
             grid.addWidget(QLabel("暂无评价图片"), 0, 0)

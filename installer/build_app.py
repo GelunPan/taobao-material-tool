@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APP_NAME = "淘宝评价工具"
+APP_NAME = "tb-tool2"
 DIST_APP = os.path.join(ROOT, "dist", APP_NAME)
 
 
@@ -157,9 +157,10 @@ def build_app():
             if os.path.isfile(src) and not os.path.exists(dst):
                 shutil.copy2(src, dst)
                 copied += 1
+        # data.json 保持原始路径不变；图片已复制到 target_images，应用端 scaled_pixmap 会 fallback 到 IMAGES_DIR 找同名文件
         with open(os.path.join(target_data, "data.json"), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"已打包示例数据：只保留「示例」店铺，引用图片 {copied} 张（非全量复制）")
+        print(f"已打包示例数据：只保留「示例」店铺，引用图片 {copied} 张")
 
     print("主程序已生成：", DIST_APP)
 

@@ -828,7 +828,7 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         host = QWidget()
         grid = QGridLayout(host)
-        grid.setSpacing(8)
+        grid.setSpacing(12)
         # 首次打开清理无效图
         removed_invalid = 0
         for shop, cats in self.repo.shops.items():
@@ -854,7 +854,7 @@ class MainWindow(QMainWindow):
             for shop, cats in self.repo.shops.items():
                 for cat, records in cats.items():
                     for r in records:
-                        item_id = r.get("item_id") or r.get("id") or ""
+                        item_id = r.get("product_id") or r.get("item_id") or r.get("id") or ""
                         kept = []
                         for pp in (r.get("image_paths") or []):
                             if not pp:
@@ -891,8 +891,8 @@ class MainWindow(QMainWindow):
             for i, (path, name) in enumerate(its):
                 cell = QWidget()
                 cl = _QVLayout(cell)
-                cl.setContentsMargins(2, 2, 2, 2)
-                cl.setSpacing(2)
+                cl.setContentsMargins(0, 0, 0, 0)
+                cl.setSpacing(1)
                 lbl = QLabel()
                 lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
                 pm = scaled_pixmap(path, 140)
@@ -902,7 +902,7 @@ class MainWindow(QMainWindow):
                 lbl.setToolTip(path)
                 name_lbl = QLabel(name)
                 name_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
-                name_lbl.setStyleSheet("font-size: 11px; color: #606266;")
+                name_lbl.setStyleSheet("font-size: 11px; color: #606266; padding: 0; margin: 0;")
                 name_lbl.setWordWrap(True)
                 cl.addWidget(lbl)
                 cl.addWidget(name_lbl)

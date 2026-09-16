@@ -817,100 +817,171 @@ class MainWindow(QMainWindow):
 
     # ==================== 店铺管理 ====================
     def _open_image_manager(self):
-        """图片管理：列出所有评价图片（先做个简单网格预览）"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QScrollArea, QGridLayout, QLabel
+        """图片管理：分类+网格预览"""
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QScrollArea, QGridLayout, QLabel,
+            QSplitter, QListWidget, QListWidgetItem, QPushButton, QHBoxLayout,
+            QInputDialog, QMenu, QCheckBox, QWidget as _W
+        )
         from .image_utils import scaled_pixmap
         dlg = QDialog(self)
-        dlg.setWindowTitle("图片管理（此功能开发中，敬请期待）")
-        dlg.resize(900, 600)
-        lay = QVBoxLayout(dlg)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        host = QWidget()
-        grid = QGridLayout(host)
-        grid.setSpacing(12)
-        from PyQt6.QtCore import Qt as _QtAlign
-        grid.setAlignment(_QtAlign.AlignmentFlag.AlignTop | _QtAlign.AlignmentFlag.AlignLeft)
-        # 首次打开清理无效图
-        removed_invalid = 0
-        for shop, cats in self.repo.shops.items():
-            for cat, records in cats.items():
+        dlg.setWindowTitle("图片管理")
+        dlg.resize(1200, 750)
+        root = QVBoxLayout(dlg)
+
+        # 数据：分类列表 + 图片->分类映射
+        data = self.repo._data
+        cats = data.setdefault("image_categories", [])
+        cat_map = data.setdefault("image_category_map", {})
+        current_cat = {"name": "全部图片"}  # 当前选中分类
+
+        # ===== 左右布局 =====
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        root.addWidget(splitter)
+
+        # 左：分类列表
+        cat_list = QListWidget()
+        cat_list.setMaximumWidth(200)
+        cat_list.setStyleSheet("QListWidget { border-right: 1px solid #e0e0e0; }")
+        splitter.addWidget(cat_list)
+
+        def refresh_cat_list():
+            cat_list.clear()
+            item_all = QListWidgetItem(f"全部图片")
+            cat_list.addItem(item_all)
+            for c in cats:
+                cat_list.addItem(QListWidgetItem(c))
+            # 默认选中全部
+            for i in range(cat_list.count()):
+                if cat_list.item(i).text() == current_cat["name"]:
+                    cat_list.setCurrentRow(i)
+                    break
+
+        def on_cat_changed():
+            current_cat["name"] = cat_list.currentItem().text() if cat_list.currentItem() else "全部图片"
+            render_grid()
+
+        cat_list.currentRowChanged.connect(on_cat_changed)
+
+        # 右键空白处：新建分类；分类右键：删除
+        def cat_context_menu(pos):
+            item = cat_list.itemAt(pos)
+            m = QMenu(cat_list)
+            if item is None:
+                a_new = m.addAction("新建分类")
+                act = m.exec(cat_list.viewport().mapToGlobal(pos))
+                if act == a_new:
+                    name, ok = QInputDialog.getText(dlg, "新建分类", "分类名称:")
+                    if ok and name.strip():
+                        cats.append(name.strip())
+                        self.repo.save()
+                        refresh_cat_list()
+                return
+            name = item.text()
+            if name == "全部图片":
+                return
+            a_del = m.addAction("删除分类")
+            act = m.exec(cat_list.viewport().mapToGlobal(pos))
+            if act == a_del:
+                ret = QMessageBox.question(dlg, "删除分类", f"删除分类「{name}」？\n（图片不会删除，仅移出分类）")
+                if ret == QMessageBox.StandardButton.Yes:
+                    cats.remove(name)
+                    for k in list(cat_map.keys()):
+                        if cat_map.get(k) == name:
+                            del cat_map[k]
+                    self.repo.save()
+                    refresh_cat_list()
+                    render_grid()
+        cat_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        cat_list.customContextMenuRequested.connect(cat_context_menu)
+
+        # 右：工具栏 + 图片网格
+        right = QWidget()
+        rlay = QVBoxLayout(right)
+        rlay.setContentsMargins(0, 0, 0, 0)
+        splitter.addWidget(right)
+
+        # 工具栏
+        toolbar = QHBoxLayout()
+        select_btn = QPushButton("选择")
+        select_btn.setCheckable(True)
+        toolbar.addWidget(select_btn)
+        toolbar.addStretch(1)
+        refresh_btn = QPushButton("刷新")
+        from PyQt6.QtWidgets import QStyle as _QStyle
+        refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardPixmap.SP_BrowserReload))
+        refresh_btn.clicked.connect(render_grid)
+        toolbar.addWidget(refresh_btn)
+        rlay.addLayout(toolbar)
+
+        selecting = {"on": False}
+        checked_paths = set()
+
+        def toggle_select(on):
+            selecting["on"] = on
+            checked_paths.clear()
+            select_btn.setText("取消选择" if on else "选择")
+            render_grid()
+        select_btn.toggled.connect(toggle_select)
+
+        # 收集图片
+        def collect_items():
+            its = []
+            seen = set()
+            for shop, cat, records in [(s, c, rs) for s, sd in self.repo.shops.items() for c, rs in sd.items()]:
                 for r in records:
-                    kept = []
+                    item_id = r.get("product_id") or r.get("item_id") or ""
                     for pp in (r.get("image_paths") or []):
                         if not pp:
                             continue
                         b2 = os.path.basename(pp).lower()
                         if b2.startswith("tb_sku_") or b2.startswith("tb_main_"):
-                            kept.append(pp)
                             continue
-                        if not os.path.isfile(pp):
-                            removed_invalid += 1
-                            continue
-                        kept.append(pp)
-                    r["image_paths"] = kept
-        # 收集（每次刷新调用）
-        def collect_items():
-            its = []
-            seen2 = set()
-            for shop, cats in self.repo.shops.items():
-                for cat, records in cats.items():
-                    for r in records:
-                        item_id = r.get("product_id") or r.get("item_id") or r.get("id") or ""
-                        for pp in (r.get("image_paths") or []):
-                            if not pp:
-                                continue
-                            b2 = os.path.basename(pp).lower()
-                            if b2.startswith("tb_sku_") or b2.startswith("tb_main_"):
-                                continue
-                            nm = f"{shop}_{cat}_{item_id}"
-                            if pp not in seen2:
-                                seen2.add(pp)
-                                its.append((pp, nm))
+                        if pp not in seen:
+                            seen.add(pp)
+                            its.append((pp, f"{shop}_{cat}_{item_id}"))
+            # 按当前分类过滤
+            if current_cat["name"] != "全部图片":
+                its = [(p, n) for p, n in its if cat_map.get(p) == current_cat["name"]]
             return its
-        if removed_invalid:
-            self.repo.save()
-        # 统计每张图被哪些记录使用
+
         def usage_map():
             m = {}
-            for shop, cats in self.repo.shops.items():
-                for cat, records in cats.items():
+            for shop, catsd in self.repo.shops.items():
+                for cat, records in catsd.items():
                     for idx, r in enumerate(records):
                         for pp in (r.get("image_paths") or []):
                             if pp:
                                 m.setdefault(pp, []).append((shop, cat, idx))
             return m
-        # 跳转到某条记录
+
         def goto_record(shop, cat, rec_idx):
             dlg.accept()
             self.select_shop_in_tree(shop)
-            # 切换分类
             if hasattr(self, "_set_category"):
                 self._set_category(cat)
             QTimer.singleShot(200, lambda: self.table.selectRow(rec_idx))
-        # 删除图片：从所有记录的 image_paths 移除该路径
+
         def delete_image(path):
-            ret = QMessageBox.question(
-                dlg, "删除图片",
-                f"确认删除这张图片吗？\n将从所有商品的评价图片中移除引用。\n\n{os.path.basename(path)}",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No)
+            ret = QMessageBox.question(dlg, "删除图片",
+                f"确认删除？\n将从所有商品评价图片中移除。\n{os.path.basename(path)}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if ret != QMessageBox.StandardButton.Yes:
                 return
             with self._undo_step("删除评价图片"):
-                for shop, cats in self.repo.shops.items():
-                    for cat, records in cats.items():
+                for shop, catsd in self.repo.shops.items():
+                    for cat, records in catsd.items():
                         for r in records:
-                            ips = r.get("image_paths") or []
-                            r["image_paths"] = [p for p in ips if p != path]
+                            r["image_paths"] = [p for p in (r.get("image_paths") or []) if p != path]
+            cat_map.pop(path, None)
+            self.repo.save()
             self.refresh_table()
             self.image_library_changed.emit()
-        # 查看大图
+            render_grid()
+
         def view_big(path):
-            from .image_utils import scaled_pixmap as _sp
-            pm = _sp(path, 1200)
+            pm = scaled_pixmap(path, 1200)
             if not pm:
-                QMessageBox.information(dlg, "提示", "图片加载失败")
                 return
             v = QDialog(dlg)
             v.setWindowTitle(os.path.basename(path))
@@ -924,7 +995,27 @@ class MainWindow(QMainWindow):
             sc.setWidget(lb)
             vl.addWidget(sc)
             v.exec()
-        # 渲染函数
+
+        # 移动图片到分类
+        def move_to_cat(paths_list, cat_name):
+            for p in paths_list:
+                if cat_name == "未分类":
+                    cat_map.pop(p, None)
+                else:
+                    cat_map[p] = cat_name
+            self.repo.save()
+            render_grid()
+
+        # 网格
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        host = QWidget()
+        grid = QGridLayout(host)
+        grid.setSpacing(12)
+        grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        scroll.setWidget(host)
+        rlay.addWidget(scroll)
+
         def render_grid():
             while grid.count():
                 it = grid.takeAt(0)
@@ -933,35 +1024,46 @@ class MainWindow(QMainWindow):
                     w.deleteLater()
             its = collect_items()
             if not its:
-                grid.addWidget(QLabel("暂无评价图片"), 0, 0)
+                grid.addWidget(QLabel("暂无图片"), 0, 0)
                 return
-            from PyQt6.QtWidgets import QVBoxLayout as _QVLayout, QMenu, QPushButton as _QPB
-            from PyQt6.QtCore import Qt as _Qt
             umap = usage_map()
             cols = 5
             for i, (path, name) in enumerate(its):
                 uses = umap.get(path, [])
                 cell = QWidget()
-                cl = _QVLayout(cell)
+                cl = QVBoxLayout(cell)
                 cl.setContentsMargins(0, 0, 0, 0)
                 cl.setSpacing(1)
-                # 图片+角标容器
                 img_wrap = QWidget()
                 img_wrap.setFixedSize(148, 148)
                 lbl = QLabel(img_wrap)
                 lbl.setGeometry(0, 0, 148, 148)
-                lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+                lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 pm = scaled_pixmap(path, 140)
                 if pm:
                     lbl.setPixmap(pm)
                 lbl.setStyleSheet("border: 1px solid #1677ff; background: white; border-radius: 2px;")
                 lbl.setToolTip(f"{name}\n使用次数：{len(uses)}")
-                # 右下角红点角标按钮
-                badge = _QPB(str(len(uses)), img_wrap)
+
+                # 选择模式：左上角复选框
+                cb = None
+                if selecting["on"]:
+                    cb = QCheckBox(img_wrap)
+                    cb.setGeometry(4, 4, 18, 18)
+                    cb.setStyleSheet("background: white;")
+                    cb.setChecked(path in checked_paths)
+                    def _toggled(checked, p=path):
+                        if checked:
+                            checked_paths.add(p)
+                        else:
+                            checked_paths.discard(p)
+                    cb.toggled.connect(_toggled)
+
+                # 右下角蓝点角标
+                badge = QPushButton(str(len(uses)), img_wrap)
                 badge.setGeometry(118, 120, 28, 20)
                 badge.setStyleSheet("background: #1677ff; color: white; border-radius: 9px; font: bold 9pt; padding: 0;")
-                badge.setCursor(_Qt.CursorShape.PointingHandCursor)
-                badge.setToolTip("点击查看使用位置")
+                badge.setCursor(Qt.CursorShape.PointingHandCursor)
                 def _show_uses(uses_list, p):
                     m = QMenu(badge)
                     m.setStyleSheet("QMenu { min-width: 280px; background: white; border: 1px solid #1677ff; padding: 4px; } QMenu::item { padding: 4px 20px; } QMenu::item:selected { background: #e6f4ff; color: #1677ff; }")
@@ -980,44 +1082,68 @@ class MainWindow(QMainWindow):
                         if data:
                             goto_record(*data)
                 badge.clicked.connect(lambda checked=False, ul=uses, pp=path: _show_uses(ul, pp))
+
                 # 右键菜单
                 def _menu(p=path):
                     m = QMenu(lbl)
                     a1 = m.addAction("查看大图")
+                    # 移动到分类子菜单
+                    sub = m.addMenu("移动到分类")
+                    a_none = sub.addAction("未分类")
+                    cat_acts = []
+                    for c in cats:
+                        a = sub.addAction(c)
+                        cat_acts.append((a, c))
+                    m.addSeparator()
                     a2 = m.addAction("删除图片")
                     act = m.exec(QCursor.pos())
                     if act == a1:
                         view_big(p)
                     elif act == a2:
                         delete_image(p)
+                    elif act == a_none:
+                        move_to_cat([p], "未分类")
+                    else:
+                        for a, c in cat_acts:
+                            if act == a:
+                                move_to_cat([p], c)
+                                break
                 lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 lbl.customContextMenuRequested.connect(lambda pos, pp=path: _menu(pp))
-                lbl.setCursor(_Qt.CursorShape.PointingHandCursor)
+                lbl.setCursor(Qt.CursorShape.PointingHandCursor)
                 lbl.mouseDoubleClickEvent = lambda e, p=path: view_big(p)
+
                 name_lbl = QLabel(name)
-                name_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+                name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 name_lbl.setStyleSheet("font-size: 11px; color: #606266; padding: 0; margin: 0;")
                 name_lbl.setWordWrap(True)
                 cl.addWidget(img_wrap)
                 cl.addWidget(name_lbl)
                 grid.addWidget(cell, i // cols, i % cols,
-                               _QtAlign.AlignmentFlag.AlignTop | _QtAlign.AlignmentFlag.AlignLeft)
+                               Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+            # 选择模式下：右键网格空白处批量移动
+            def grid_context_menu(pos):
+                if not selecting["on"] or not checked_paths:
+                    return
+                m = QMenu(host)
+                sub = m.addMenu(f"移动 {len(checked_paths)} 张到分类")
+                a_none = sub.addAction("未分类")
+                cat_acts = [(sub.addAction(c), c) for c in cats]
+                act = m.exec(QCursor.pos())
+                if act == a_none:
+                    move_to_cat(list(checked_paths), "未分类")
+                else:
+                    for a, c in cat_acts:
+                        if act == a:
+                            move_to_cat(list(checked_paths), c)
+                            break
+            host.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            host.customContextMenuRequested.connect(grid_context_menu)
+
+        refresh_cat_list()
         render_grid()
         self.image_library_changed.connect(render_grid)
-        scroll.setWidget(host)
-        lay.addWidget(scroll)
-        # 右下角刷新按钮
-        from PyQt6.QtWidgets import QPushButton as _QPB, QHBoxLayout as _QHB
-        from PyQt6.QtGui import QIcon as _QIcon
-        from PyQt6.QtWidgets import QStyle as _QStyle
-        btn_row = _QHB()
-        btn_row.addStretch(1)
-        refresh_btn = _QPB("刷新")
-        refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardPixmap.SP_BrowserReload))
-        refresh_btn.setToolTip("重新统计并刷新图片列表")
-        refresh_btn.clicked.connect(render_grid)
-        btn_row.addWidget(refresh_btn)
-        lay.addLayout(btn_row)
         try:
             dlg.exec()
         finally:

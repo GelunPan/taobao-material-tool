@@ -88,6 +88,29 @@ def build_app():
             except Exception as e:
                 print("[warn] 跳过删除调试文件（不影响功能）:", dbg, "->", e)
 
+    # 瘦身：删确定用不到的资源（不影响功能）
+    slim_dirs = [
+        os.path.join(DIST_APP, "_internal", "PyQt6", "Qt6", "qml"),       # QML 运行时（我们用 Widgets）
+        os.path.join(DIST_APP, "_internal", "PyQt6", "Qt6", "translations"),  # 多语言翻译（52MB，用不到）
+    ]
+    for d in slim_dirs:
+        if os.path.isdir(d):
+            try:
+                subprocess.run(["cmd", "/c", "rmdir", "/s", "/q", d], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print("removed slim dir:", d)
+            except Exception as e:
+                print("[warn] 跳过:", d, "->", e)
+    # 软件渲染回退 DLL（19MB，有独显就不需要）
+    sw = os.path.join(DIST_APP, "_internal", "PyQt6", "Qt6", "bin", "opengl32sw.dll")
+    if os.path.isfile(sw):
+        try:
+            subprocess.run(["cmd", "/c", "del", "/f", "/q", sw], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("removed opengl32sw.dll")
+        except Exception as e:
+            print("[warn] 跳过 opengl32sw:", e)
+
     # 打包示例店铺数据：只保留"示例"店铺，其他测试店铺不打包
     seed_data = os.path.join(ROOT, "data", "data.json")
     seed_images = os.path.join(ROOT, "data", "images")

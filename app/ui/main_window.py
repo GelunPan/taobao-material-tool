@@ -1153,13 +1153,13 @@ class MainWindow(QMainWindow):
                 badge.setCursor(Qt.CursorShape.PointingHandCursor)
                 def _show_uses(uses_list, p):
                     m = QMenu(badge)
-                    m.setStyleSheet("QMenu { min-width: 280px; background: white; border: 1px solid #1677ff; padding: 4px; } QMenu::item { padding: 4px 20px; } QMenu::item:selected { background: #e6f4ff; color: #1677ff; }")
+                    m.setStyleSheet("QMenu { min-width: 320px; background: white; border: 1px solid #1677ff; padding: 6px; font-size: 14px; } QMenu::item { padding: 8px 28px; } QMenu::item:selected { background: #e6f4ff; color: #1677ff; }")
                     for j, (shop, cat, idx) in enumerate(uses_list, 1):
                         a = m.addAction(f"{j}. {shop} / {cat} / 第{idx+1}条")
                         a.setData((shop, cat, idx))
                     m.addSeparator()
                     a_del = m.addAction("删除这张图片")
-                    act = m.exec(QCursor.pos())
+                    act = m.exec(QCursor.pos() + __import__('PyQt6.QtCore', fromlist=['QPoint']).QPoint(20, -120))
                     if act is None:
                         return
                     if act == a_del:
@@ -1183,7 +1183,7 @@ class MainWindow(QMainWindow):
                         cat_acts.append((a, c))
                     m.addSeparator()
                     a2 = m.addAction("删除图片")
-                    act = m.exec(QCursor.pos())
+                    act = m.exec(QCursor.pos() + __import__('PyQt6.QtCore', fromlist=['QPoint']).QPoint(20, -120))
                     if act == a1:
                         view_big(p)
                     elif act == a2:
@@ -1217,7 +1217,7 @@ class MainWindow(QMainWindow):
                 sub = m.addMenu(f"移动 {len(checked_paths)} 张到分类")
                 a_none = sub.addAction("未分类")
                 cat_acts = [(sub.addAction(c), c) for c in cats]
-                act = m.exec(QCursor.pos())
+                act = m.exec(QCursor.pos() + __import__('PyQt6.QtCore', fromlist=['QPoint']).QPoint(20, -120))
                 if act == a_none:
                     move_to_cat(list(checked_paths), "未分类")
                 else:

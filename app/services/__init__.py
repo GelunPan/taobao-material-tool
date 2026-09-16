@@ -82,6 +82,10 @@ class ImageService:
         # 来源二：复制的图片文件（text/uri-list，文件管理器复制文件场景）
         path = ImageService._first_image_file(mime)
         if path:
+            # 统一读入 images_dir 并按 MD5 去重，不直接引用外部路径
+            saved, new_counter = ImageService.import_image_files([path], images_dir, counter)
+            if saved:
+                return saved[0], new_counter
             return path, counter
 
         return None, counter

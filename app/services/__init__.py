@@ -101,21 +101,19 @@ class ImageService:
             image = QImage(str(src))
             if image.isNull():
                 continue
-            # 算哈希查重复
-            ba = QByteArray()
-            buf = QBuffer(ba)
-            buf.open(QIODevice.OpenModeFlag.WriteOnly)
-            image.save(buf, IMAGE_EXT)
-            md5 = hashlib.md5(bytes(ba)).hexdigest()
+            # 算哈希查重复（先存临时文件，避免QBuffer字节不完整）
+            tmp = images_dir / "_tmp_hash.png"
+            image.save(str(tmp), "PNG")
+            md5 = hashlib.md5(open(tmp, "rb").read()).hexdigest()
             reused = None
-            for existing in images_dir.glob("image_*"):
+            for existing in images_dir.glob("image_*.png"):
                 try:
-                    with open(existing, "rb") as f:
-                        if hashlib.md5(f.read()).hexdigest() == md5:
-                            reused = str(existing)
-                            break
+                    if hashlib.md5(open(existing, "rb").read()).hexdigest() == md5:
+                        reused = str(existing)
+                        break
                 except Exception:
                     continue
+            tmp.unlink(missing_ok=True)
             if reused:
                 saved.append(reused)
                 continue

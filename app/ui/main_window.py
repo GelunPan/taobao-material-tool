@@ -1040,7 +1040,63 @@ class MainWindow(QMainWindow):
         scroll.setWidget(host)
         rlay.addWidget(scroll)
 
+        def dedupe_external_images():
+            """刷新时：把外部路径的图和 images_dir 里视觉相同的合并。"""
+            from PyQt6.QtGui import QImage as _QImg
+            import os as _os
+            images_dir = str(self.repo.images_dir)
+            def _phash(path):
+                img = _QImg(path)
+                if img.isNull():
+                    return None
+                img = img.scaled(8, 8)
+                g = img.convertToFormat(_QImg.Format.Format_Grayscale8)
+                px = [g.pixelColor(x, y).value() for y in range(8) for x in range(8)]
+                avg = sum(px) / 64
+                b = 0
+                for i, v in enumerate(px):
+                    if v >= avg:
+                        b |= (1 << i)
+                return b
+            def _ham(a, b):
+                return bin(a ^ b).count("1")
+            # 索引 images_dir
+            idh = {}
+            for f in Path(images_dir).glob("image_*"):
+                h = _phash(str(f))
+                if h is not None:
+                    idh[str(f)] = h
+            changed = False
+            for shop, cats in self.repo.shops.items():
+                for cat, records in cats.items():
+                    for r in records:
+                        ips = r.get("image_paths", [])
+                        if not isinstance(ips, list):
+                            continue
+                        new_ips = []
+                        seen = set()
+                        for pp in ips:
+                            if pp and _os.path.isfile(pp) and not pp.startswith(images_dir):
+                                h = _phash(pp)
+                                if h is not None:
+                                    best, bd = None, 999
+                                    for ip, ih in idh.items():
+                                        d = _ham(h, ih)
+                                        if d < bd:
+                                            bd, best = d, ip
+                                    if best is not None and bd <= 5:
+                                        pp = best
+                            if pp not in seen:
+                                seen.add(pp)
+                                new_ips.append(pp)
+                        if new_ips != ips:
+                            r["image_paths"] = new_ips
+                            changed = True
+            if changed:
+                self.repo.save()
+
         def render_grid():
+            dedupe_external_images()
             # 彻底清空旧内容
             while grid.count():
                 it = grid.takeAt(0)

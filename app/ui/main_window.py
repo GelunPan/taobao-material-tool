@@ -387,6 +387,7 @@ class _SplitBar(QWidget):
 
 
 class MainWindow(QMainWindow):
+    image_library_changed = pyqtSignal()  # 评价图片增删后通知图片管理刷新
     def __init__(self):
         super().__init__()
         self.setWindowTitle(config.APP_TITLE)
@@ -907,12 +908,16 @@ class MainWindow(QMainWindow):
                 cl.addWidget(name_lbl)
                 grid.addWidget(cell, i // cols, i % cols)
         render_grid()
-        timer = QTimer(dlg)
-        timer.timeout.connect(render_grid)
-        timer.start(2000)
+        self.image_library_changed.connect(render_grid)
         scroll.setWidget(host)
         lay.addWidget(scroll)
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            try:
+                self.image_library_changed.disconnect(render_grid)
+            except Exception:
+                pass
 
     def on_add_shop(self):
         name, ok = QInputDialog.getText(self, "添加店铺", "请输入店铺名称:")
@@ -1601,6 +1606,8 @@ class MainWindow(QMainWindow):
                     self.current_shop, self.current_category,
                     record_index, field_name, filepath)
         self.refresh_table()
+        if field_name == "image_paths":
+            self.image_library_changed.emit()
 
     def on_delete_image_requested(self, row, field_name, img_index):
         """删除单元格内的某张图片：多图移除指定序号，单图直接清空（仅移除引用）"""
@@ -1617,6 +1624,8 @@ class MainWindow(QMainWindow):
                     self.current_shop, self.current_category,
                     record_index, field_name, "")
         self.refresh_table()
+        if field_name == "image_paths":
+            self.image_library_changed.emit()
 
     def _on_toggle_select_menu(self, checked: bool):
         """菜单里点「选择」：切换批量选择模式，同步表头按钮与勾选列"""
@@ -1663,6 +1672,8 @@ class MainWindow(QMainWindow):
                 self.repo.append_record_image(
                     self.current_shop, self.current_category, record_index, filepath)
         self.refresh_table()
+        if field_name == "image_paths":
+            self.image_library_changed.emit()
 
     # ==================== 搜索 ====================
     def on_search(self):

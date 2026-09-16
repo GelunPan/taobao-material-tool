@@ -857,21 +857,16 @@ class MainWindow(QMainWindow):
                 for cat, records in cats.items():
                     for r in records:
                         item_id = r.get("product_id") or r.get("item_id") or r.get("id") or ""
-                        kept = []
                         for pp in (r.get("image_paths") or []):
                             if not pp:
                                 continue
                             b2 = os.path.basename(pp).lower()
                             if b2.startswith("tb_sku_") or b2.startswith("tb_main_"):
                                 continue
-                            if not os.path.isfile(pp):
-                                continue
-                            kept.append(pp)
                             nm = f"{shop}_{cat}_{item_id}"
                             if pp not in seen2:
                                 seen2.add(pp)
                                 its.append((pp, nm))
-                        r["image_paths"] = kept
             return its
         if removed_invalid:
             self.repo.save()

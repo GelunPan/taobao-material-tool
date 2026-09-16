@@ -828,34 +828,57 @@ class MainWindow(QMainWindow):
         host = QWidget()
         grid = QGridLayout(host)
         grid.setSpacing(8)
-        imgs = []
+        items = []  # (path, name)
         seen = set()
+        removed_invalid = 0
         for shop, cats in self.repo.shops.items():
             for cat, records in cats.items():
                 for r in records:
+                    item_id = r.get("item_id") or r.get("id") or ""
+                    kept = []
                     for p in (r.get("image_paths") or []):
                         if not p:
                             continue
                         base = os.path.basename(p).lower()
                         if base.startswith("tb_sku_") or base.startswith("tb_main_"):
                             continue
+                        # 无效图片直接从记录里删掉
+                        if not os.path.isfile(p):
+                            removed_invalid += 1
+                            continue
+                        kept.append(p)
+                        name = f"{shop}_{cat}_{item_id}"
                         if p not in seen:
                             seen.add(p)
-                            imgs.append(p)
-        if not imgs:
+                            items.append((p, name))
+                    r["image_paths"] = kept
+        if removed_invalid:
+            self.repo.save()
+        if not items:
             grid.addWidget(QLabel("暂无评价图片"), 0, 0)
         else:
+            from PyQt6.QtWidgets import QVBoxLayout as _QV
+            from PyQt6.QtCore import Qt as _Qt
             cols = 5
-            for i, path in enumerate(imgs):
+            for i, (path, name) in enumerate(items):
+                cell = QWidget()
+                cl = _QVLayout(cell)
+                cl.setContentsMargins(2, 2, 2, 2)
+                cl.setSpacing(2)
                 lbl = QLabel()
+                lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
                 pm = scaled_pixmap(path, 140)
                 if pm:
                     lbl.setPixmap(pm)
-                else:
-                    lbl.setText("无效")
                 lbl.setStyleSheet("border: 1px solid #dcdfe6;")
                 lbl.setToolTip(path)
-                grid.addWidget(lbl, i // cols, i % cols)
+                name_lbl = QLabel(name)
+                name_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+                name_lbl.setStyleSheet("font-size: 11px; color: #606266;")
+                name_lbl.setWordWrap(True)
+                cl.addWidget(lbl)
+                cl.addWidget(name_lbl)
+                grid.addWidget(cell, i // cols, i % cols)
         scroll.setWidget(host)
         lay.addWidget(scroll)
         dlg.exec()

@@ -1062,7 +1062,8 @@ class MainWindow(QMainWindow):
                 return bin(a ^ b).count("1")
             # 索引 images_dir
             idh = {}
-            for f in Path(images_dir).glob("image_*"):
+            from pathlib import Path as _P
+            for f in _P(images_dir).glob("image_*"):
                 h = _phash(str(f))
                 if h is not None:
                     idh[str(f)] = h

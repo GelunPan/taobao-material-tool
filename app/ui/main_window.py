@@ -984,7 +984,7 @@ class MainWindow(QMainWindow):
                     elif act == a2:
                         delete_image(p)
                 lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                lbl.customContextMenuRequested.connect(_menu)
+                lbl.customContextMenuRequested.connect(lambda pos, pp=path: _menu(pp))
                 # 双击查看大图
                 lbl.setCursor(Qt.CursorShape.PointingHandCursor)
                 lbl.mouseDoubleClickEvent = lambda e, p=path: view_big(p)

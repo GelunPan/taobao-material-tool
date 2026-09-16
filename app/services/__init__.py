@@ -55,8 +55,25 @@ class ImageService:
         # 来源一：剪贴板二进制图片（截图等）
         image = ImageService._image_from_mime(clipboard, mime)
         if not image.isNull():
-            counter += 1
+            import hashlib, io
             images_dir.mkdir(parents=True, exist_ok=True)
+            # 先存到内存算哈希
+            buf = io.BytesIO()
+            from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
+            ba = QByteArray()
+            buf_q = QBuffer(ba)
+            buf_q.open(QIODevice.OpenModeFlag.WriteOnly)
+            image.save(buf_q, IMAGE_EXT)
+            md5 = hashlib.md5(bytes(ba)).hexdigest()
+            # 查 images_dir 里有没有同 md5 的图（按文件名前缀 image_ 匹配）
+            for existing in images_dir.glob("image_*"):
+                try:
+                    with open(existing, "rb") as f:
+                        if hashlib.md5(f.read()).hexdigest() == md5:
+                            return str(existing), counter
+                except Exception:
+                    continue
+            counter += 1
             filepath = images_dir / f"image_{counter:04d}.{IMAGE_EXT.lower()}"
             if image.save(str(filepath), IMAGE_EXT):
                 return str(filepath), counter

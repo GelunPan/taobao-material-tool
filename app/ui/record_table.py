@@ -1074,6 +1074,10 @@ class RecordTable(QTableWidget):
                     # 按当前内容自适应，再夹在“较小默认值”与上限之间
                     self.resizeColumnToContents(col)
                     width = self.columnWidth(col)
+                    # 商品ID和规格列：直接按内容自适应，不缩放
+                    if field in ("product_id", "spec"):
+                        self.setColumnWidth(col, max(width, self._col_mins[col]))
+                        continue
                     width = max(TABLE_DEFAULT_COL_WIDTH, min(width, TABLE_SHORT_COL_MAX_WIDTH))
                 # 初始宽紧凑化，并保证不小于该列最小宽
                 width = int(width * TABLE_COL_INIT_SCALE)

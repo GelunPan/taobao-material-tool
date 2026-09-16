@@ -974,11 +974,11 @@ class MainWindow(QMainWindow):
                 lbl.setStyleSheet("border: 1px solid #dcdfe6;")
                 lbl.setToolTip(f"{name}\n使用次数：{cnt.get(path,0)}")
                 # 右键菜单
-                def _menu(pos, p=path):
+                def _menu(p=path):
                     m = QMenu(lbl)
                     a1 = m.addAction("查看大图")
                     a2 = m.addAction("删除图片")
-                    act = m.exec(lbl.mapToGlobal(pos))
+                    act = m.exec(QCursor.pos())
                     if act == a1:
                         view_big(p)
                     elif act == a2:

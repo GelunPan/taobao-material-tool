@@ -979,7 +979,7 @@ class MainWindow(QMainWindow):
                         data = act.data()
                         if data:
                             goto_record(*data)
-                badge.clicked.connect(_show_uses)
+                badge.clicked.connect(lambda checked=False: _show_uses())
                 # 右键菜单
                 def _menu(p=path):
                     m = QMenu(lbl)

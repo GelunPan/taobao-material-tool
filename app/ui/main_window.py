@@ -954,12 +954,12 @@ class MainWindow(QMainWindow):
                 pm = scaled_pixmap(path, 140)
                 if pm:
                     lbl.setPixmap(pm)
-                lbl.setStyleSheet("border: 1px solid #dcdfe6; background: white;")
+                lbl.setStyleSheet("border: 1px solid #1677ff; background: white; border-radius: 2px;")
                 lbl.setToolTip(f"{name}\n使用次数：{len(uses)}")
                 # 右下角红点角标按钮
                 badge = _QPB(str(len(uses)), img_wrap)
                 badge.setGeometry(118, 120, 28, 20)
-                badge.setStyleSheet("background: #eb2f2f; color: white; border-radius: 9px; font: bold 9pt; padding: 0;")
+                badge.setStyleSheet("background: #1677ff; color: white; border-radius: 9px; font: bold 9pt; padding: 0;")
                 badge.setCursor(_Qt.CursorShape.PointingHandCursor)
                 badge.setToolTip("点击查看使用位置")
                 def _show_uses(uses_list=uses, p=path):

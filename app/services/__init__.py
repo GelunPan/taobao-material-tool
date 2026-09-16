@@ -94,11 +94,30 @@ class ImageService:
         按统一编号保存为 IMAGE_EXT，和剪贴板保存的图片口径一致。
         返回 (已保存路径列表, 新计数器)；无法读取的文件自动跳过。
         """
+        import hashlib
         saved = []
         images_dir.mkdir(parents=True, exist_ok=True)
         for src in src_paths:
             image = QImage(str(src))
             if image.isNull():
+                continue
+            # 算哈希查重复
+            ba = QByteArray()
+            buf = QBuffer(ba)
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            image.save(buf, IMAGE_EXT)
+            md5 = hashlib.md5(bytes(ba)).hexdigest()
+            reused = None
+            for existing in images_dir.glob("image_*"):
+                try:
+                    with open(existing, "rb") as f:
+                        if hashlib.md5(f.read()).hexdigest() == md5:
+                            reused = str(existing)
+                            break
+                except Exception:
+                    continue
+            if reused:
+                saved.append(reused)
                 continue
             counter += 1
             filepath = images_dir / f"image_{counter:04d}.{IMAGE_EXT.lower()}"

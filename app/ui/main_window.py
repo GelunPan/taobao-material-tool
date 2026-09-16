@@ -870,40 +870,24 @@ class MainWindow(QMainWindow):
             return its
         if removed_invalid:
             self.repo.save()
-        # 统计每张图被多少条记录引用
-        def count_usage():
-            cnt = {}
+        # 统计每张图被哪些记录使用
+        def usage_map():
+            m = {}
             for shop, cats in self.repo.shops.items():
                 for cat, records in cats.items():
-                    for r in records:
+                    for idx, r in enumerate(records):
                         for pp in (r.get("image_paths") or []):
-                            if pp and os.path.isfile(pp):
-                                cnt[pp] = cnt.get(pp, 0) + 1
-            return cnt
-        # 在 pixmap 右下角画红色数字角标
-        def badge_pixmap(pm, n):
-            if not pm or n is None:
-                return pm
-            from PyQt6.QtGui import QPainter, QColor, QFont
-            from PyQt6.QtCore import QRectF
-            pm = pm.copy() if pm.isNull() else pm
-            pn = QPainter(pm)
-            pn.setRenderHint(QPainter.RenderHint.Antialiasing)
-            # 角标
-            badge_w = 28
-            badge_h = 20
-            x = pm.width() - badge_w - 2
-            y = pm.height() - badge_h - 2
-            pn.setBrush(QColor(235, 47, 47))
-            pn.setPen(QColor(235, 47, 47))
-            pn.drawRoundedRect(QRectF(x, y, badge_w, badge_h), 9, 9)
-            pn.setPen(QColor(255, 255, 255))
-            f = QFont("Microsoft YaHei", 9, QFont.Weight.Bold)
-            pn.setFont(f)
-            pn.drawText(QRectF(x, y, badge_w, badge_h),
-                        Qt.AlignmentFlag.AlignCenter, str(n))
-            pn.end()
-            return pm
+                            if pp:
+                                m.setdefault(pp, []).append((shop, cat, idx))
+            return m
+        # 跳转到某条记录
+        def goto_record(shop, cat, rec_idx):
+            dlg.accept()
+            self.select_shop_in_tree(shop)
+            # 切换分类
+            if hasattr(self, "_set_category"):
+                self._set_category(cat)
+            QTimer.singleShot(200, lambda: self.table.selectRow(rec_idx))
         # 删除图片：从所有记录的 image_paths 移除该路径
         def delete_image(path):
             ret = QMessageBox.question(
@@ -951,23 +935,51 @@ class MainWindow(QMainWindow):
             if not its:
                 grid.addWidget(QLabel("暂无评价图片"), 0, 0)
                 return
-            from PyQt6.QtWidgets import QVBoxLayout as _QVLayout, QMenu
+            from PyQt6.QtWidgets import QVBoxLayout as _QVLayout, QMenu, QPushButton as _QPB
             from PyQt6.QtCore import Qt as _Qt
-            cnt = count_usage()
+            umap = usage_map()
             cols = 5
             for i, (path, name) in enumerate(its):
+                uses = umap.get(path, [])
                 cell = QWidget()
                 cl = _QVLayout(cell)
                 cl.setContentsMargins(0, 0, 0, 0)
                 cl.setSpacing(1)
-                lbl = QLabel()
+                # 图片+角标容器
+                img_wrap = QWidget()
+                img_wrap.setFixedSize(148, 148)
+                lbl = QLabel(img_wrap)
+                lbl.setGeometry(0, 0, 148, 148)
                 lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
                 pm = scaled_pixmap(path, 140)
                 if pm:
-                    pm = badge_pixmap(pm, cnt.get(path, 0))
                     lbl.setPixmap(pm)
-                lbl.setStyleSheet("border: 1px solid #dcdfe6;")
-                lbl.setToolTip(f"{name}\n使用次数：{cnt.get(path,0)}")
+                lbl.setStyleSheet("border: 1px solid #dcdfe6; background: white;")
+                lbl.setToolTip(f"{name}\n使用次数：{len(uses)}")
+                # 右下角红点角标按钮
+                badge = _QPB(str(len(uses)), img_wrap)
+                badge.setGeometry(118, 120, 28, 20)
+                badge.setStyleSheet("background: #eb2f2f; color: white; border-radius: 9px; font: bold 9pt; padding: 0;")
+                badge.setCursor(_Qt.CursorShape.PointingHandCursor)
+                badge.setToolTip("点击查看使用位置")
+                def _show_uses(uses_list=uses, p=path):
+                    m = QMenu(badge)
+                    m.setStyleSheet("QMenu { min-width: 280px; }")
+                    for j, (shop, cat, idx) in enumerate(uses_list, 1):
+                        a = m.addAction(f"{j}. {shop} / {cat} / 第{idx+1}条")
+                        a.setData((shop, cat, idx))
+                    m.addSeparator()
+                    a_del = m.addAction("删除这张图片")
+                    act = m.exec(badge.mapToGlobal(badge.rect().bottomRight()))
+                    if act is None:
+                        return
+                    if act == a_del:
+                        delete_image(p)
+                    else:
+                        data = act.data()
+                        if data:
+                            goto_record(*data)
+                badge.clicked.connect(_show_uses)
                 # 右键菜单
                 def _menu(p=path):
                     m = QMenu(lbl)
@@ -980,14 +992,13 @@ class MainWindow(QMainWindow):
                         delete_image(p)
                 lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 lbl.customContextMenuRequested.connect(lambda pos, pp=path: _menu(pp))
-                # 双击查看大图
-                lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+                lbl.setCursor(_Qt.CursorShape.PointingHandCursor)
                 lbl.mouseDoubleClickEvent = lambda e, p=path: view_big(p)
                 name_lbl = QLabel(name)
                 name_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
                 name_lbl.setStyleSheet("font-size: 11px; color: #606266; padding: 0; margin: 0;")
                 name_lbl.setWordWrap(True)
-                cl.addWidget(lbl)
+                cl.addWidget(img_wrap)
                 cl.addWidget(name_lbl)
                 grid.addWidget(cell, i // cols, i % cols,
                                _QtAlign.AlignmentFlag.AlignTop | _QtAlign.AlignmentFlag.AlignLeft)

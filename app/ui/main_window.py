@@ -543,7 +543,12 @@ class MainWindow(QMainWindow):
         self.act_img_mgmt = self.shop_mgmt_menu.addAction("🖼 图片管理")
         from PyQt6.QtGui import QCursor
         def _show_menu():
-            self.shop_mgmt_menu.exec(QCursor.pos())
+            self.shop_mgmt_menu.adjustSize()
+            sz = self.shop_mgmt_menu.sizeHint()
+            # 鼠标右上角：菜单右下角对齐鼠标左下方偏移
+            from PyQt6.QtCore import QPoint
+            pos = QCursor.pos() - QPoint(sz.width(), 0)
+            self.shop_mgmt_menu.exec(pos)
         self.btn_shop_mgmt.clicked.connect(_show_menu)
         self.act_add_shop.triggered.connect(lambda: self.on_add_shop())
         self.act_img_mgmt.triggered.connect(self._open_image_manager)

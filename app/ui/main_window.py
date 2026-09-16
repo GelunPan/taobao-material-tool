@@ -964,13 +964,13 @@ class MainWindow(QMainWindow):
                 badge.setToolTip("点击查看使用位置")
                 def _show_uses(uses_list=uses, p=path):
                     m = QMenu(badge)
-                    m.setStyleSheet("QMenu { min-width: 280px; }")
+                    m.setStyleSheet("QMenu { min-width: 280px; background: white; border: 1px solid #1677ff; padding: 4px; } QMenu::item { padding: 4px 20px; } QMenu::item:selected { background: #e6f4ff; color: #1677ff; }")
                     for j, (shop, cat, idx) in enumerate(uses_list, 1):
                         a = m.addAction(f"{j}. {shop} / {cat} / 第{idx+1}条")
                         a.setData((shop, cat, idx))
                     m.addSeparator()
                     a_del = m.addAction("删除这张图片")
-                    act = m.exec(badge.mapToGlobal(badge.rect().bottomRight()))
+                    act = m.exec(QCursor.pos())
                     if act is None:
                         return
                     if act == a_del:

@@ -923,9 +923,15 @@ class MainWindow(QMainWindow):
         select_btn.toggled.connect(toggle_select)
 
         # 收集图片
+        import hashlib as _hl
+        def _file_md5(path):
+            try:
+                return _hl.md5(open(path, "rb").read()).hexdigest()
+            except Exception:
+                return None
         def collect_items():
             its = []
-            seen = set()
+            seen_md5 = set()  # 按内容MD5去重
             for shop, cat, records in [(s, c, rs) for s, sd in self.repo.shops.items() for c, rs in sd.items()]:
                 for r in records:
                     item_id = r.get("product_id") or r.get("item_id") or ""
@@ -937,22 +943,40 @@ class MainWindow(QMainWindow):
                             continue
                         if not os.path.isfile(pp):
                             continue
-                        if pp not in seen:
-                            seen.add(pp)
-                            its.append((pp, f"{shop}_{cat}_{item_id}"))
+                        h = _file_md5(pp)
+                        if h and h in seen_md5:
+                            continue
+                        if h:
+                            seen_md5.add(h)
+                        its.append((pp, f"{shop}_{cat}_{item_id}"))
             # 按当前分类过滤
             if current_cat["name"] != "全部图片":
                 its = [(p, n) for p, n in its if cat_map.get(p) == current_cat["name"]]
             return its
 
         def usage_map():
+            # 按 MD5 合并：相同内容的图路径不同，但算同一张
+            md5_to_primary = {}  # md5 -> 代表路径
+            path_to_md5 = {}
+            for shop, catsd in self.repo.shops.items():
+                for cat, records in catsd.items():
+                    for idx, r in enumerate(records):
+                        for pp in (r.get("image_paths") or []):
+                            if pp and os.path.isfile(pp):
+                                h = _file_md5(pp)
+                                if h:
+                                    path_to_md5[pp] = h
+                                    if h not in md5_to_primary:
+                                        md5_to_primary[h] = pp
             m = {}
             for shop, catsd in self.repo.shops.items():
                 for cat, records in catsd.items():
                     for idx, r in enumerate(records):
                         for pp in (r.get("image_paths") or []):
                             if pp:
-                                m.setdefault(pp, []).append((shop, cat, idx))
+                                h = path_to_md5.get(pp)
+                                key = md5_to_primary.get(h, pp)
+                                m.setdefault(key, []).append((shop, cat, idx))
             return m
 
         def goto_record(shop, cat, rec_idx):

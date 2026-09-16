@@ -935,6 +935,8 @@ class MainWindow(QMainWindow):
                         b2 = os.path.basename(pp).lower()
                         if b2.startswith("tb_sku_") or b2.startswith("tb_main_"):
                             continue
+                        if not os.path.isfile(pp):
+                            continue
                         if pp not in seen:
                             seen.add(pp)
                             its.append((pp, f"{shop}_{cat}_{item_id}"))

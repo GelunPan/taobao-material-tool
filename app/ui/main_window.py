@@ -535,9 +535,17 @@ class MainWindow(QMainWindow):
             "QPushButton:hover { background: #66b1ff; }"
         )
         self.shop_mgmt_menu = QMenu(self)
+        self.shop_mgmt_menu.setStyleSheet(
+            "QMenu { font-size: 14px; padding: 6px 10px; }"
+            "QMenu::item { padding: 10px 32px; }"
+        )
         self.act_add_shop = self.shop_mgmt_menu.addAction("➕ 新增店铺")
         self.act_img_mgmt = self.shop_mgmt_menu.addAction("🖼 图片管理")
-        self.btn_shop_mgmt.setMenu(self.shop_mgmt_menu)
+        from PyQt6.QtCore import QPoint
+        def _show_menu():
+            pos = self.btn_shop_mgmt.mapToGlobal(QPoint(self.btn_shop_mgmt.width() - 100, -10))
+            self.shop_mgmt_menu.exec(pos)
+        self.btn_shop_mgmt.clicked.connect(_show_menu)
         self.act_add_shop.triggered.connect(lambda: self.on_add_shop())
         self.act_img_mgmt.triggered.connect(self._open_image_manager)
         left_layout.addWidget(self.btn_shop_mgmt)

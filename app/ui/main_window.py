@@ -962,7 +962,7 @@ class MainWindow(QMainWindow):
                 badge.setStyleSheet("background: #1677ff; color: white; border-radius: 9px; font: bold 9pt; padding: 0;")
                 badge.setCursor(_Qt.CursorShape.PointingHandCursor)
                 badge.setToolTip("点击查看使用位置")
-                def _show_uses(uses_list=uses, p=path):
+                def _show_uses(uses_list, p):
                     m = QMenu(badge)
                     m.setStyleSheet("QMenu { min-width: 280px; background: white; border: 1px solid #1677ff; padding: 4px; } QMenu::item { padding: 4px 20px; } QMenu::item:selected { background: #e6f4ff; color: #1677ff; }")
                     for j, (shop, cat, idx) in enumerate(uses_list, 1):
@@ -979,7 +979,7 @@ class MainWindow(QMainWindow):
                         data = act.data()
                         if data:
                             goto_record(*data)
-                badge.clicked.connect(lambda checked=False: _show_uses())
+                badge.clicked.connect(lambda checked=False, ul=uses, pp=path: _show_uses(ul, pp))
                 # 右键菜单
                 def _menu(p=path):
                     m = QMenu(lbl)

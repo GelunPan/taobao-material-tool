@@ -1017,10 +1017,16 @@ class MainWindow(QMainWindow):
         rlay.addWidget(scroll)
 
         def render_grid():
+            # 彻底清空旧内容
             while grid.count():
                 it = grid.takeAt(0)
                 w = it.widget()
                 if w:
+                    w.setParent(None)
+                    w.deleteLater()
+            # 同步子项
+            for w in host.findChildren(QWidget):
+                if w is not host and w.parent() is None:
                     w.deleteLater()
             its = collect_items()
             if not its:

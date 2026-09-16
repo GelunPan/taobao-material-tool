@@ -829,6 +829,8 @@ class MainWindow(QMainWindow):
         host = QWidget()
         grid = QGridLayout(host)
         grid.setSpacing(12)
+        from PyQt6.QtCore import Qt as _QtAlign
+        grid.setAlignment(_QtAlign.AlignmentFlag.AlignTop | _QtAlign.AlignmentFlag.AlignLeft)
         # 首次打开清理无效图
         removed_invalid = 0
         for shop, cats in self.repo.shops.items():
@@ -899,14 +901,14 @@ class MainWindow(QMainWindow):
                 if pm:
                     lbl.setPixmap(pm)
                 lbl.setStyleSheet("border: 1px solid #dcdfe6;")
-                lbl.setToolTip(path)
+                lbl.setToolTip(name)
                 name_lbl = QLabel(name)
                 name_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
                 name_lbl.setStyleSheet("font-size: 11px; color: #606266; padding: 0; margin: 0;")
                 name_lbl.setWordWrap(True)
                 cl.addWidget(lbl)
                 cl.addWidget(name_lbl)
-                grid.addWidget(cell, i // cols, i % cols)
+                grid.addWidget(cell, i // cols, i % cols, _QtAlign.AlignmentFlag.AlignTop | _QtAlign.AlignmentFlag.AlignLeft)
         render_grid()
         self.image_library_changed.connect(render_grid)
         scroll.setWidget(host)

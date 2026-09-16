@@ -909,7 +909,6 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("刷新")
         from PyQt6.QtWidgets import QStyle as _QStyle
         refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardPixmap.SP_BrowserReload))
-        refresh_btn.clicked.connect(render_grid)
         toolbar.addWidget(refresh_btn)
         rlay.addLayout(toolbar)
 
@@ -1142,6 +1141,7 @@ class MainWindow(QMainWindow):
 
         refresh_cat_list()
         render_grid()
+        refresh_btn.clicked.connect(render_grid)
         self.image_library_changed.connect(render_grid)
         try:
             dlg.exec()

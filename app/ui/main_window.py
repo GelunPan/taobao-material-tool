@@ -1007,7 +1007,7 @@ class MainWindow(QMainWindow):
         btn_row = _QHB()
         btn_row.addStretch(1)
         refresh_btn = _QPB("刷新")
-        refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardWidget.SP_BrowserReload))
+        refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardPixmap.SP_BrowserReload))
         refresh_btn.setToolTip("重新统计并刷新图片列表")
         refresh_btn.clicked.connect(render_grid)
         btn_row.addWidget(refresh_btn)

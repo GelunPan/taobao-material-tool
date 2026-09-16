@@ -542,12 +542,12 @@ class MainWindow(QMainWindow):
         self.act_add_shop = self.shop_mgmt_menu.addAction("➕ 新增店铺")
         self.act_img_mgmt = self.shop_mgmt_menu.addAction("🖼 图片管理")
         from PyQt6.QtGui import QCursor
+        from PyQt6.QtCore import QPoint
         def _show_menu():
             self.shop_mgmt_menu.adjustSize()
             sz = self.shop_mgmt_menu.sizeHint()
-            # 鼠标右上角：菜单右下角对齐鼠标左下方偏移
-            from PyQt6.QtCore import QPoint
-            pos = QCursor.pos() - QPoint(sz.width(), 0)
+            # 菜单左下角对齐鼠标位置
+            pos = QCursor.pos() - QPoint(sz.width(), sz.height())
             self.shop_mgmt_menu.exec(pos)
         self.btn_shop_mgmt.clicked.connect(_show_menu)
         self.act_add_shop.triggered.connect(lambda: self.on_add_shop())

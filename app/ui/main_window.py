@@ -3,6 +3,7 @@
 只负责界面组织与事件响应，数据读写走 ShopRepository，图片/导出走服务层。
 数据变更统一走 `_undo_step` 包一层，Ctrl+Z 即可回退上一步。
 """
+import os
 from contextlib import contextmanager
 from copy import deepcopy
 

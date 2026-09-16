@@ -875,9 +875,78 @@ class MainWindow(QMainWindow):
             return its
         if removed_invalid:
             self.repo.save()
-        # 渲染函数：清空 grid 后重新填
+        # 统计每张图被多少条记录引用
+        def count_usage():
+            cnt = {}
+            for shop, cats in self.repo.shops.items():
+                for cat, records in cats.items():
+                    for r in records:
+                        for pp in (r.get("image_paths") or []):
+                            if pp and os.path.isfile(pp):
+                                cnt[pp] = cnt.get(pp, 0) + 1
+            return cnt
+        # 在 pixmap 右下角画红色数字角标
+        def badge_pixmap(pm, n):
+            if not pm or n is None:
+                return pm
+            from PyQt6.QtGui import QPainter, QColor, QFont
+            from PyQt6.QtCore import QRectF
+            pm = pm.copy() if pm.isNull() else pm
+            pn = QPainter(pm)
+            pn.setRenderHint(QPainter.RenderHint.Antialiasing)
+            # 角标
+            badge_w = 28
+            badge_h = 20
+            x = pm.width() - badge_w - 2
+            y = pm.height() - badge_h - 2
+            pn.setBrush(QColor(235, 47, 47))
+            pn.setPen(QColor(235, 47, 47))
+            pn.drawRoundedRect(QRectF(x, y, badge_w, badge_h), 9, 9)
+            pn.setPen(QColor(255, 255, 255))
+            f = QFont("Microsoft YaHei", 9, QFont.Weight.Bold)
+            pn.setFont(f)
+            pn.drawText(QRectF(x, y, badge_w, badge_h),
+                        Qt.AlignmentFlag.AlignCenter, str(n))
+            pn.end()
+            return pm
+        # 删除图片：从所有记录的 image_paths 移除该路径
+        def delete_image(path):
+            ret = QMessageBox.question(
+                dlg, "删除图片",
+                f"确认删除这张图片吗？\n将从所有商品的评价图片中移除引用。\n\n{os.path.basename(path)}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+            with self._undo_step("删除评价图片"):
+                for shop, cats in self.repo.shops.items():
+                    for cat, records in cats.items():
+                        for r in records:
+                            ips = r.get("image_paths") or []
+                            r["image_paths"] = [p for p in ips if p != path]
+            self.refresh_table()
+            self.image_library_changed.emit()
+        # 查看大图
+        def view_big(path):
+            from .image_utils import scaled_pixmap as _sp
+            pm = _sp(path, 1200)
+            if not pm:
+                QMessageBox.information(dlg, "提示", "图片加载失败")
+                return
+            v = QDialog(dlg)
+            v.setWindowTitle(os.path.basename(path))
+            v.resize(min(1200, pm.width()+40), min(900, pm.height()+80))
+            vl = QVBoxLayout(v)
+            lb = QLabel()
+            lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lb.setPixmap(pm)
+            sc = QScrollArea()
+            sc.setWidgetResizable(True)
+            sc.setWidget(lb)
+            vl.addWidget(sc)
+            v.exec()
+        # 渲染函数
         def render_grid():
-            # 清空旧内容
             while grid.count():
                 it = grid.takeAt(0)
                 w = it.widget()
@@ -887,8 +956,9 @@ class MainWindow(QMainWindow):
             if not its:
                 grid.addWidget(QLabel("暂无评价图片"), 0, 0)
                 return
-            from PyQt6.QtWidgets import QVBoxLayout as _QVLayout
+            from PyQt6.QtWidgets import QVBoxLayout as _QVLayout, QMenu
             from PyQt6.QtCore import Qt as _Qt
+            cnt = count_usage()
             cols = 5
             for i, (path, name) in enumerate(its):
                 cell = QWidget()
@@ -899,16 +969,33 @@ class MainWindow(QMainWindow):
                 lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
                 pm = scaled_pixmap(path, 140)
                 if pm:
+                    pm = badge_pixmap(pm, cnt.get(path, 0))
                     lbl.setPixmap(pm)
                 lbl.setStyleSheet("border: 1px solid #dcdfe6;")
-                lbl.setToolTip(name)
+                lbl.setToolTip(f"{name}\n使用次数：{cnt.get(path,0)}")
+                # 右键菜单
+                def _menu(pos, p=path):
+                    m = QMenu(lbl)
+                    a1 = m.addAction("查看大图")
+                    a2 = m.addAction("删除图片")
+                    act = m.exec(lbl.mapToGlobal(pos))
+                    if act == a1:
+                        view_big(p)
+                    elif act == a2:
+                        delete_image(p)
+                lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                lbl.customContextMenuRequested.connect(_menu)
+                # 双击查看大图
+                lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+                lbl.mouseDoubleClickEvent = lambda e, p=path: view_big(p)
                 name_lbl = QLabel(name)
                 name_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
                 name_lbl.setStyleSheet("font-size: 11px; color: #606266; padding: 0; margin: 0;")
                 name_lbl.setWordWrap(True)
                 cl.addWidget(lbl)
                 cl.addWidget(name_lbl)
-                grid.addWidget(cell, i // cols, i % cols, _QtAlign.AlignmentFlag.AlignTop | _QtAlign.AlignmentFlag.AlignLeft)
+                grid.addWidget(cell, i // cols, i % cols,
+                               _QtAlign.AlignmentFlag.AlignTop | _QtAlign.AlignmentFlag.AlignLeft)
         render_grid()
         self.image_library_changed.connect(render_grid)
         scroll.setWidget(host)

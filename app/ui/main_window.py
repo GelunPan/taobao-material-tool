@@ -828,39 +828,66 @@ class MainWindow(QMainWindow):
         host = QWidget()
         grid = QGridLayout(host)
         grid.setSpacing(8)
-        items = []  # (path, name)
-        seen = set()
+        # 首次打开清理无效图
         removed_invalid = 0
         for shop, cats in self.repo.shops.items():
             for cat, records in cats.items():
                 for r in records:
-                    item_id = r.get("item_id") or r.get("id") or ""
                     kept = []
-                    for p in (r.get("image_paths") or []):
-                        if not p:
+                    for pp in (r.get("image_paths") or []):
+                        if not pp:
                             continue
-                        base = os.path.basename(p).lower()
-                        if base.startswith("tb_sku_") or base.startswith("tb_main_"):
+                        b2 = os.path.basename(pp).lower()
+                        if b2.startswith("tb_sku_") or b2.startswith("tb_main_"):
+                            kept.append(pp)
                             continue
-                        # 无效图片直接从记录里删掉
-                        if not os.path.isfile(p):
+                        if not os.path.isfile(pp):
                             removed_invalid += 1
                             continue
-                        kept.append(p)
-                        name = f"{shop}_{cat}_{item_id}"
-                        if p not in seen:
-                            seen.add(p)
-                            items.append((p, name))
+                        kept.append(pp)
                     r["image_paths"] = kept
+        # 收集（每次刷新调用）
+        def collect_items():
+            its = []
+            seen2 = set()
+            for shop, cats in self.repo.shops.items():
+                for cat, records in cats.items():
+                    for r in records:
+                        item_id = r.get("item_id") or r.get("id") or ""
+                        kept = []
+                        for pp in (r.get("image_paths") or []):
+                            if not pp:
+                                continue
+                            b2 = os.path.basename(pp).lower()
+                            if b2.startswith("tb_sku_") or b2.startswith("tb_main_"):
+                                continue
+                            if not os.path.isfile(pp):
+                                continue
+                            kept.append(pp)
+                            nm = f"{shop}_{cat}_{item_id}"
+                            if pp not in seen2:
+                                seen2.add(pp)
+                                its.append((pp, nm))
+                        r["image_paths"] = kept
+            return its
         if removed_invalid:
             self.repo.save()
-        if not items:
-            grid.addWidget(QLabel("暂无评价图片"), 0, 0)
-        else:
-            from PyQt6.QtWidgets import QVBoxLayout as _QV
+        # 渲染函数：清空 grid 后重新填
+        def render_grid():
+            # 清空旧内容
+            while grid.count():
+                it = grid.takeAt(0)
+                w = it.widget()
+                if w:
+                    w.deleteLater()
+            its = collect_items()
+            if not its:
+                grid.addWidget(QLabel("暂无评价图片"), 0, 0)
+                return
+            from PyQt6.QtWidgets import QVBoxLayout as _QVLayout
             from PyQt6.QtCore import Qt as _Qt
             cols = 5
-            for i, (path, name) in enumerate(items):
+            for i, (path, name) in enumerate(its):
                 cell = QWidget()
                 cl = _QVLayout(cell)
                 cl.setContentsMargins(2, 2, 2, 2)
@@ -879,6 +906,10 @@ class MainWindow(QMainWindow):
                 cl.addWidget(lbl)
                 cl.addWidget(name_lbl)
                 grid.addWidget(cell, i // cols, i % cols)
+        render_grid()
+        timer = QTimer(dlg)
+        timer.timeout.connect(render_grid)
+        timer.start(2000)
         scroll.setWidget(host)
         lay.addWidget(scroll)
         dlg.exec()

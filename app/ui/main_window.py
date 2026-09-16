@@ -1000,6 +1000,18 @@ class MainWindow(QMainWindow):
         self.image_library_changed.connect(render_grid)
         scroll.setWidget(host)
         lay.addWidget(scroll)
+        # 右下角刷新按钮
+        from PyQt6.QtWidgets import QPushButton as _QPB, QHBoxLayout as _QHB
+        from PyQt6.QtGui import QIcon as _QIcon
+        from PyQt6.QtWidgets import QStyle as _QStyle
+        btn_row = _QHB()
+        btn_row.addStretch(1)
+        refresh_btn = _QPB("刷新")
+        refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardWidget.SP_BrowserReload))
+        refresh_btn.setToolTip("重新统计并刷新图片列表")
+        refresh_btn.clicked.connect(render_grid)
+        btn_row.addWidget(refresh_btn)
+        lay.addLayout(btn_row)
         try:
             dlg.exec()
         finally:

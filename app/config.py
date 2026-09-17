@@ -39,8 +39,9 @@ RECORD_FIELDS = [
     "image_paths",  # 评价图片（多张，列表）
     "helper",       # 补手
     "product_url",  # 商品链接（文本，放在图片列右侧）
+    "created_time", # 创建时间（自动填充）
 ]
-TABLE_HEADERS = ["商品ID", "链接主图", "标题", "规格图", "规格", "买家秀评价", "评价图片", "补手", "商品链接"]
+TABLE_HEADERS = ["商品ID", "链接主图", "标题", "规格图", "规格", "买家秀评价", "评价图片", "补手", "商品链接", "创建时间"]
 
 # 单张图片字段 / 多张图片字段（均渲染为图片单元格）
 SINGLE_IMAGE_FIELDS = set()
@@ -51,7 +52,7 @@ IMAGE_FIELDS = SINGLE_IMAGE_FIELDS | MULTI_IMAGE_FIELDS
 # 顺序对应 RECORD_FIELDS；表格最前面还有一列固定宽度的“选择”列（见 SELECT_COLUMN_WIDTH）
 # 所有数据列均可手动拖拽宽度、拖动表头换位；普通列按内容收缩并夹在上下限之间，
 # 弹性列（标题/评价）自动瓜分剩余空间，窗口缩小时同步自适应缩小
-TABLE_COLUMN_MODES = [0, 0, 1, 0, 0, 1, 0, 0, 0]  # 标题/买家秀评价为弹性列
+TABLE_COLUMN_MODES = [0, 0, 1, 0, 0, 1, 0, 0, 0, 0]  # 标题/买家秀评价为弹性列
 TABLE_LINK_COLUMN_WIDTH = 120  # 商品链接列固定宽度
 TABLE_DEFAULT_COL_WIDTH = 90     # 普通文本列的较小默认宽度（内容更短时收缩到内容宽度）
 TABLE_SHORT_COL_MAX_WIDTH = 200  # 普通文本列按内容自适应的宽度上限，防止超长内容把列撑爆

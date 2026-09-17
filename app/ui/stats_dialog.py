@@ -224,6 +224,16 @@ class StatsDialog(QDialog):
         line.setStyleSheet("color: #e8e8e8;")
         root.addWidget(line)
 
+        # 统计概览卡片：平均图片数、平均字数
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(16)
+
+        self.card_avg_images = self._make_stat_card("📷 平均图片数", "0", "#5B8FF9")
+        self.card_avg_words = self._make_stat_card("📝 平均字数", "0", "#5AD8A6")
+        cards_row.addWidget(self.card_avg_images)
+        cards_row.addWidget(self.card_avg_words)
+        root.addLayout(cards_row)
+
         # 两个扇形图并排
         charts_row = QHBoxLayout()
         charts_row.setSpacing(20)
@@ -251,6 +261,32 @@ class StatsDialog(QDialog):
 
         self._load_shops()
 
+    def _make_stat_card(self, title: str, value: str, color: str) -> QFrame:
+        """创建一个统计概览卡片"""
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {color}15;
+                border: 1px solid {color}40;
+                border-radius: 10px;
+                padding: 12px 20px;
+            }}
+        """)
+        layout = QVBoxLayout(card)
+        layout.setSpacing(4)
+        layout.setContentsMargins(16, 12, 16, 12)
+
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
+        layout.addWidget(title_lbl)
+
+        value_lbl = QLabel(value)
+        value_lbl.setStyleSheet(f"color: {color}; font-size: 28px; font-weight: bold;")
+        value_lbl.setObjectName("card_value")
+        layout.addWidget(value_lbl)
+
+        return card
+
     def _load_shops(self):
         self.shop_combo.clear()
         shops = list(self.repo.shops.keys())
@@ -263,8 +299,9 @@ class StatsDialog(QDialog):
         months = set()
         for cat, records in self.repo.shops.get(shop, {}).items():
             for r in records:
-                m = r.get("created_at", "未知")
-                months.add(m)
+                m = r.get("created_at", "")
+                if m and m != "未知":
+                    months.add(m)
         months = sorted(months, reverse=True)
         if not months:
             months = [datetime.now().strftime("%Y-%m")]
@@ -300,6 +337,20 @@ class StatsDialog(QDialog):
         images_data = [(cat, cnt) for cat, cnt in sorted(images_by_cat.items(),
                                                           key=lambda x: -x[1]) if cnt > 0]
         self.pie_images.set_data(images_data)
+
+        # 计算平均图片数和平均字数（该店铺所有记录）
+        all_records = []
+        for cat, records in self.repo.shops.get(shop, {}).items():
+            all_records.extend(records)
+        total_count = len(all_records) or 1
+        total_images = sum(len(r.get("image_paths") or []) for r in all_records)
+        total_words = sum(len(r.get("review") or "") for r in all_records)
+        avg_images = total_images / total_count
+        avg_words = total_words / total_count
+
+        # 更新卡片
+        self.card_avg_images.findChild(QLabel, "card_value").setText(f"{avg_images:.1f}")
+        self.card_avg_words.findChild(QLabel, "card_value").setText(f"{avg_words:.0f}")
 
         # 数据明细
         # 清空旧内容

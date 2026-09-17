@@ -19,7 +19,7 @@ def main():
     zip_app_folder(DIST_APP, PAYLOAD)
     build_installer_exe()
     print("=" * 60)
-    print("全部完成。最终产物：dist/win10_x64_taobaotools_V1.1.exe")
+    print("全部完成。最终产物：dist/win10_x64_taobaotools_V1.2.exe")
 
 
 if __name__ == "__main__":

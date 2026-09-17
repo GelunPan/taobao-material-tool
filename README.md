@@ -1,6 +1,6 @@
 # 淘宝评价工具
 
-> 版本：**v1.1 正式版** · 本地离线桌面工具
+> 版本：**v1.2 正式版** · 本地离线桌面工具
 
 面向淘宝运营/评价维护场景的素材管理工具：按店铺组织评价素材记录，支持截图直接粘贴进表格、按标题搜索、一键导出 Excel；内置淘宝登录与商品素材抓取（基于 Playwright 驱动本机真实 Chrome，规避风控）。全部数据保存在本地，不上传任何内容。
 
@@ -210,7 +210,7 @@ D:\tools\python\envs\taobao-build\Scripts\python.exe installer\build_all.py
 python installer/build_all.py
 ```
 
-产物：`dist/win10_x64_taobaotools_V1.1.exe`
+产物：`dist/win10_x64_taobaotools_V1.2.exe`
 （**单个 exe 安装程序**，约 270MB——PyInstaller 把完整应用压缩内嵌，双击即运行，无需附带任何文件夹；首次启动会自解压到临时目录，属一次性开销）
 
 ### 安装程序工作流
@@ -285,7 +285,7 @@ Windows 会锁定「正在运行」的 exe 文件。若之前跑过 `--test` 或
 
 ```bash
 # 无界面跑完整安装流程（解压 + 桌面快捷方式），验证产物是否可用
-dist/win10_x64_taobaotools_V1.1.exe --test D:/tmp_test_install
+dist/win10_x64_taobaotools_V1.2.exe --test D:/tmp_test_install
 ```
 
 重点确认：`_internal/app/style.qss` 是**文件**而不是目录（坑 1 的直接验证点）。
@@ -451,6 +451,14 @@ git push origin main
 
 ## 版本记录
 
+### v1.2（正式版）— 图片管理增强 + 搜索 + 去重
+- ✅ **图片管理**：左侧分类栏（右键空白新建分类）、角标显示使用次数、角标可点击展开使用位置
+- ✅ **图片搜索**：粘贴或选择图片文件，自动匹配已有图片，显示使用次数和位置，双击跳转对应记录
+- ✅ **图片去重**：粘贴/导入时按 MD5 自动去重；刷新时按感知哈希合并视觉相同的图
+- ✅ **查看大图**：右键菜单支持复制图片、删除图片
+- ✅ **非模态窗口**：图片管理和搜索对话框可最小化，不阻塞主程序
+- ✅ **店铺管理菜单**：跟随鼠标右上角弹出
+
 ### v1.1（正式版）— 浏览器选择 + 大图右键 + Edge 兼容
 
 **客户机兼容性增强**：新增 Edge 支持与登录浏览器选择，修复 Chrome/Edge 共用 profile 导致的 cookie 失效。
@@ -459,7 +467,7 @@ git push origin main
 - ✅ **Edge 支持**：Windows 自带 Edge（Chromium 内核）也可登录，客户机无需另装 Chrome；探测顺序 Chrome → Edge → Playwright 自带 Chromium
 - ✅ **Chrome/Edge 独立 profile**：两种浏览器各用各的持久化目录（`taobao_chrome_profile` / `taobao_edge_profile`），互不污染；登录时自动记录所用浏览器，抓取时复用对应 profile，修复「Edge 登录后总报 cookie 失效」
 - ✅ **大图窗口右键菜单**：查看大图时右键图片，可「复制图片」（到剪贴板）或「删除此图」（二次确认后从记录移除并刷新表格）；翻页到第 N 张再删，删的就是正在看的那张
-- ✅ **安装包改名**：输出 `win10_x64_taobaotools_V1.1.exe`，按操作系统/架构/工具名/版本号命名，便于客户分发
+- ✅ **安装包改名**：输出 `win10_x64_taobaotools_V1.2.exe`，按操作系统/架构/工具名/版本号命名，便于客户分发
 
 ### v1.0（正式版）— 启动引导 + 抓取填充 + 交互打磨
 

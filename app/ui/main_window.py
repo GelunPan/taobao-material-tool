@@ -842,6 +842,7 @@ class MainWindow(QMainWindow):
         from PyQt6.QtCore import Qt as _QtW
         dlg.setWindowFlags(_QtW.WindowType.WindowMinimizeButtonHint |
                           _QtW.WindowType.WindowMaximizeButtonHint |
+                          _QtW.WindowType.WindowCloseButtonHint |
                           _QtW.WindowType.Window)
         root = QVBoxLayout(dlg)
 

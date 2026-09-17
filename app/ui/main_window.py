@@ -130,6 +130,55 @@ class _RotatingSvgIcon(QLabel):
         painter.end()
 
 
+class RefreshIconButton(QWidget):
+    """可点击的旋转刷新按钮：点击后SVG图标丝滑旋转一圈，发出 clicked 信号"""
+    clicked = pyqtSignal()
+
+    def __init__(self, svg_path: str, size: int = 20, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("刷新")
+        self._renderer = QSvgRenderer(svg_path)
+        self._angle = 0
+        self._anim = QPropertyAnimation(self, b"angle", self)
+        self._anim.setDuration(500)
+        self._anim.setStartValue(0)
+        self._anim.setEndValue(360)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+    @pyqtProperty(int)
+    def angle(self):
+        return self._angle
+
+    @angle.setter
+    def angle(self, value):
+        self._angle = value
+        self.update()
+
+    def paintEvent(self, event):
+        if not getattr(self, '_renderer', None) or not self._renderer.isValid():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.translate(self.width() / 2, self.height() / 2)
+        painter.rotate(self._angle)
+        painter.translate(-self.width() / 2, -self.height() / 2)
+        self._renderer.render(painter, QRectF(0, 0, self.width(), self.height()))
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.spin()
+            self.clicked.emit()
+
+    def spin(self):
+        """外部调用：旋转一圈"""
+        self._anim.stop()
+        self._anim.start()
+
+
 class _LoadingOverlay(QWidget):
     """全局加载动画覆盖层：旋转 SVG + 状态文字"""
     def __init__(self, parent=None):
@@ -511,6 +560,11 @@ class MainWindow(QMainWindow):
         self.btn_toggle_tree.clicked.connect(self.on_toggle_tree)
         title_row.addWidget(left_label)
         title_row.addStretch()
+        # 刷新按钮：点击旋转一圈，刷新店铺树分类记录条数统计
+        self.btn_refresh_tree = RefreshIconButton(str(config.ASSETS_DIR / "refresh.svg"), 18)
+        self.btn_refresh_tree.setToolTip("刷新店铺分类记录条数")
+        self.btn_refresh_tree.clicked.connect(self.rebuild_shop_tree)
+        title_row.addWidget(self.btn_refresh_tree)
         title_row.addWidget(self.btn_toggle_tree)
         left_layout.addLayout(title_row)
 
@@ -941,7 +995,8 @@ class MainWindow(QMainWindow):
         select_btn.setCheckable(True)
         toolbar.addWidget(select_btn)
         toolbar.addStretch(1)
-        refresh_btn = QPushButton("刷新")
+        refresh_btn = RefreshIconButton(str(config.ASSETS_DIR / "refresh.svg"), 18)
+        refresh_btn.setToolTip("刷新图片列表")
         from PyQt6.QtWidgets import QStyle as _QStyle
         refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardPixmap.SP_BrowserReload))
         toolbar.addWidget(refresh_btn)

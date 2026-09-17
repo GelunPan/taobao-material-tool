@@ -922,6 +922,8 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QStyle as _QStyle
         refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardPixmap.SP_BrowserReload))
         toolbar.addWidget(refresh_btn)
+        search_btn = QPushButton("🔍 搜索图片")
+        toolbar.addWidget(search_btn)
         rlay.addLayout(toolbar)
 
         selecting = {"on": False}
@@ -1244,6 +1246,84 @@ class MainWindow(QMainWindow):
         render_grid()
         refresh_btn.clicked.connect(render_grid)
         self.image_library_changed.connect(render_grid)
+
+        def open_search_dialog():
+            from PyQt6.QtWidgets import (QDialog as _D, QVBoxLayout as _V, QLabel as _L,
+                QPushButton as _PB, QListWidget as _LW, QListWidgetItem as _LWI,
+                QMessageBox as _MB, QSizePolicy)
+            from PyQt6.QtGui import QImage as _QI, QPixmap as _QP
+            from PyQt6.QtCore import Qt as _Qt
+            sd = _D(dlg)
+            sd.setWindowTitle("搜索图片")
+            sd.resize(500, 500)
+            lay = _V(sd)
+            tip = _L("粘贴图片（Ctrl+V）后点搜索")
+            tip.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+            lay.addWidget(tip)
+            preview = _L("（等待粘贴图片）")
+            preview.setFixedSize(300, 300)
+            preview.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+            preview.setStyleSheet("border: 1px dashed #aaa; color: #999;")
+            lay.addWidget(preview, 0, _Qt.AlignmentFlag.AlignCenter)
+            state = {"img": None}
+            def on_paste():
+                cb = QApplication.clipboard()
+                img = cb.image()
+                if img.isNull():
+                    tip.setText("剪贴板里没有图片，请先复制图片")
+                    return
+                state["img"] = img
+                tip.setText("已粘贴，点下方搜索按钮")
+                preview.setPixmap(_QP.fromImage(img).scaled(280, 280,
+                    _Qt.AspectRatioMode.KeepAspectRatio, _Qt.TransformationMode.SmoothTransformation))
+            search_btn2 = _PB("搜索")
+            lay.addWidget(search_btn2)
+            result = _L("")
+            result.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+            lay.addWidget(result)
+            result_list = _LW()
+            lay.addWidget(result_list)
+            sd.showEvent = lambda e: on_paste()  # 打开时自动试读剪贴板
+            def do_search():
+                img = state["img"]
+                if img is None:
+                    tip.setText("请先粘贴图片（Ctrl+V）")
+                    return
+                result.setText("搜索中...")
+                result_list.clear()
+                QApplication.processEvents()
+                # 算搜索图 phash
+                def _ph(im):
+                    im = im.scaled(8, 8)
+                    g = im.convertToFormat(_QI.Format.Format_Grayscale8)
+                    px = [g.pixelColor(x, y).value() for y in range(8) for x in range(8)]
+                    avg = sum(px)/64
+                    b = 0
+                    for i, v in enumerate(px):
+                        if v >= avg: b |= (1 << i)
+                    return b
+                hq = _ph(img)
+                # 索引 images_dir
+                best, bd = None, 999
+                for f in Path(self.repo.images_dir).glob("image_*"):
+                    ih = _ph(_QI(str(f)))
+                    d = bin(hq ^ ih).count("1")
+                    if d < bd:
+                        bd, best = d, str(f)
+                if best is None or bd > 10:
+                    result.setText("未找到相似图片")
+                    return
+                # 用 usage_map 找使用位置
+                um = usage_map()
+                uses = um.get(best, [])
+                result.setText(f"匹配：{os.path.basename(best)}（汉明距离{bd}）
+共使用 {len(uses)} 次")
+                for i, (shop, cat, idx) in enumerate(uses, 1):
+                    _LWI(f"{i}. {shop} / {cat} / 第{idx+1}条", result_list)
+            search_btn2.clicked.connect(do_search)
+            sd.exec()
+
+        search_btn.clicked.connect(open_search_dialog)
         try:
             dlg.exec()
         finally:

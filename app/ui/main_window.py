@@ -839,6 +839,10 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("图片管理")
         dlg.resize(1200, 750)
+        from PyQt6.QtCore import Qt as _QtW
+        dlg.setWindowFlags(_QtW.WindowType.WindowMinimizeButtonHint |
+                          _QtW.WindowType.WindowMaximizeButtonHint |
+                          _QtW.WindowType.Window)
         root = QVBoxLayout(dlg)
 
         # 数据：分类列表 + 图片->分类映射
@@ -1348,11 +1352,17 @@ class MainWindow(QMainWindow):
                 for i, (shop, cat, idx) in enumerate(uses, 1):
                     _LWI(f"{i}. {shop} / {cat} / 第{idx+1}条", result_list)
             search_btn2.clicked.connect(do_search)
-            sd.exec()
+            sd.setWindowFlags(sd.windowFlags() | _QtW.WindowType.WindowMinimizeButtonHint)
+            sd.show()
+            sd.raise_()
+            sd.activateWindow()
 
         search_btn.clicked.connect(open_search_dialog)
         try:
-            dlg.exec()
+            self._img_mgr_dlg = dlg
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
         finally:
             try:
                 self.image_library_changed.disconnect(render_grid)

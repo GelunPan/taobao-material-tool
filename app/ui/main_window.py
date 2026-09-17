@@ -1316,8 +1316,7 @@ class MainWindow(QMainWindow):
                 # 用 usage_map 找使用位置
                 um = usage_map()
                 uses = um.get(best, [])
-                result.setText(f"匹配：{os.path.basename(best)}（汉明距离{bd}）
-共使用 {len(uses)} 次")
+                result.setText(f"匹配：{os.path.basename(best)}（汉明距离{bd}） 共使用 {len(uses)} 次")
                 for i, (shop, cat, idx) in enumerate(uses, 1):
                     _LWI(f"{i}. {shop} / {cat} / 第{idx+1}条", result_list)
             search_btn2.clicked.connect(do_search)

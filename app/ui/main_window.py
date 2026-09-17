@@ -1305,7 +1305,8 @@ class MainWindow(QMainWindow):
                 hq = _ph(img)
                 # 索引 images_dir
                 best, bd = None, 999
-                for f in Path(self.repo.images_dir).glob("image_*"):
+                from pathlib import Path as _P2
+                for f in _P2(self.repo.images_dir).glob("image_*"):
                     ih = _ph(_QI(str(f)))
                     d = bin(hq ^ ih).count("1")
                     if d < bd:

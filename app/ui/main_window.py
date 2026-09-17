@@ -847,6 +847,8 @@ class MainWindow(QMainWindow):
         loading_overlay.hide()
         def _sync_loading_geo():
             loading_overlay.setGeometry(dlg.rect())
+            if loading_overlay.isVisible():
+                loading_overlay.raise_()
         _sync_loading_geo()
         # 重写 resizeEvent 同步覆盖层大小
         _orig_resize = dlg.resizeEvent
@@ -972,14 +974,10 @@ class MainWindow(QMainWindow):
                 for r in records:
                     item_id = r.get("product_id") or r.get("item_id") or ""
                     title = r.get("title") or ""
-                    # 搜索过滤：商品ID 或 标题
+                    # 全局搜索：同时匹配商品ID和标题（ID是数字、标题是中文，不会冲突）
                     if kw:
-                        if search_text["type"] == "title":
-                            if kw not in title.lower():
-                                continue
-                        else:
-                            if kw not in item_id.lower():
-                                continue
+                        if kw not in item_id.lower() and kw not in title.lower():
+                            continue
                     for pp in (r.get("image_paths") or []):
                         if not pp:
                             continue
@@ -1156,6 +1154,7 @@ class MainWindow(QMainWindow):
 
         # 打开时显示加载动画
         loading_overlay.show_with_text("正在加载图片...\n（首次加载较慢，请稍候）")
+        loading_overlay.raise_()
         QApplication.processEvents()
         # 打开时做一次去重（感知哈希很慢，不能每次render_grid都做）
         dedupe_external_images()
@@ -1176,8 +1175,7 @@ class MainWindow(QMainWindow):
             if not its:
                 tip = "暂无图片"
                 if search_text["value"]:
-                    field = "标题" if search_text["type"] == "title" else "商品ID"
-                    tip = f"未找到{field}「{search_text['value']}」相关的图片"
+                    tip = f"未找到「{search_text['value']}」相关的图片"
                 grid.addWidget(QLabel(tip), 0, 0)
                 return
             umap = usage_map()
@@ -1336,20 +1334,9 @@ class MainWindow(QMainWindow):
             left_lay.addWidget(left_title)
             left_lay.addSpacing(6)
 
-            # 搜索类型
-            type_row = _H()
-            type_label = _L("搜索类型：")
-            type_combo = _CB()
-            type_combo.addItems(["商品ID", "商品标题"])
-            type_combo.setStyleSheet("QComboBox { padding: 5px; border: 1px solid #d9d9d9; border-radius: 4px; }")
-            type_row.addWidget(type_label)
-            type_row.addWidget(type_combo, 1)
-            left_lay.addLayout(type_row)
-            left_lay.addSpacing(6)
-
-            # 输入框
+            # 输入框（全局搜索：同时匹配商品ID和标题）
             text_input = _LE()
-            text_input.setPlaceholderText("输入商品ID或标题关键词...")
+            text_input.setPlaceholderText("输入商品ID或标题关键词（全局搜索）...")
             text_input.setStyleSheet("QLineEdit { padding: 8px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 13px; } QLineEdit:focus { border-color: #1677ff; }")
             left_lay.addWidget(text_input)
             left_lay.addSpacing(8)
@@ -1376,10 +1363,10 @@ class MainWindow(QMainWindow):
                 kw = text_input.text().strip()
                 if not kw:
                     return
-                search_text["type"] = "product_id" if type_combo.currentIndex() == 0 else "title"
                 search_text["value"] = kw
                 # 显示加载动画
                 loading_overlay.show_with_text("正在搜索...")
+                loading_overlay.raise_()
                 QApplication.processEvents()
                 render_grid()
                 loading_overlay.hide_overlay()
@@ -1388,9 +1375,8 @@ class MainWindow(QMainWindow):
             def clear_text_search():
                 text_input.clear()
                 search_text["value"] = ""
-                search_text["type"] = "product_id"
-                type_combo.setCurrentIndex(0)
                 loading_overlay.show_with_text("正在刷新...")
+                loading_overlay.raise_()
                 QApplication.processEvents()
                 render_grid()
                 loading_overlay.hide_overlay()
@@ -1477,6 +1463,7 @@ class MainWindow(QMainWindow):
                 result_list.clear()
                 # 显示加载动画
                 loading_overlay.show_with_text("正在按图搜索...\n（感知哈希匹配中）")
+                loading_overlay.raise_()
                 QApplication.processEvents()
                 def _ph(im):
                     im = im.scaled(8, 8)

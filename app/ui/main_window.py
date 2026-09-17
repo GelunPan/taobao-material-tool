@@ -1032,6 +1032,19 @@ class MainWindow(QMainWindow):
             sc.setWidgetResizable(True)
             sc.setWidget(lb)
             vl.addWidget(sc)
+            def _menu(e):
+                m = QMenu(v)
+                act_copy = m.addAction("复制图片")
+                act_del = m.addAction("删除这张图片")
+                act = m.exec(e.globalPos())
+                if act == act_copy:
+                    QApplication.clipboard().setPixmap(pm)
+                    QToolTip.showText(e.globalPos(), "已复制", v, msecShowTime=1500)
+                elif act == act_del:
+                    delete_image(path)
+                    v.accept()
+            lb.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            lb.customContextMenuRequested.connect(_menu)
             v.exec()
 
         # 移动图片到分类
@@ -1256,6 +1269,7 @@ class MainWindow(QMainWindow):
             sd = _D(dlg)
             sd.setWindowTitle("搜索图片")
             sd.resize(500, 500)
+            sd.setMinimumSize(350, 350)
             lay = _V(sd)
             tip = _L("粘贴图片（Ctrl+V）后点搜索")
             tip.setAlignment(_Qt.AlignmentFlag.AlignCenter)
@@ -1276,6 +1290,19 @@ class MainWindow(QMainWindow):
                 tip.setText("已粘贴，点下方搜索按钮")
                 preview.setPixmap(_QP.fromImage(img).scaled(280, 280,
                     _Qt.AspectRatioMode.KeepAspectRatio, _Qt.TransformationMode.SmoothTransformation))
+            file_btn = _PB("从文件选择图片...")
+            lay.addWidget(file_btn)
+            def pick_file():
+                from PyQt6.QtWidgets import QFileDialog as _FD
+                fp, _ = _FD.getOpenFileName(sd, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.webp *.bmp)")
+                if fp:
+                    img = _QI(fp)
+                    if not img.isNull():
+                        state["img"] = img
+                        tip.setText(f"已选：{os.path.basename(fp)}")
+                        preview.setPixmap(_QP.fromImage(img).scaled(280, 280,
+                            _Qt.AspectRatioMode.KeepAspectRatio, _Qt.TransformationMode.SmoothTransformation))
+            file_btn.clicked.connect(pick_file)
             search_btn2 = _PB("搜索")
             lay.addWidget(search_btn2)
             result = _L("")

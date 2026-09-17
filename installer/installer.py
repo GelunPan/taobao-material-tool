@@ -78,17 +78,19 @@ def extract_payload(payload: str, dest: str, progress_cb=None) -> None:
                 progress_cb(i + 1, total)
 
 
-def create_desktop_shortcut(exe_path: str, work_dir: str) -> str:
+def create_desktop_shortcut(exe_path: str, work_dir: str, name: str = None, icon_path: str = None) -> str:
     """在桌面创建指向 exe 的 .lnk 快捷方式，返回快捷方式路径。
 
     用系统自带的 PowerShell（Windows 必装）写入，无需任何第三方依赖。
     """
     import tempfile
 
-    lnk = os.path.join(desktop_path(), APP_NAME + ".lnk")
+    if name is None:
+        name = APP_NAME
+    if icon_path is None:
+        icon_path = exe_path
+    lnk = os.path.join(desktop_path(), name + ".lnk")
     ps_path = os.path.join(tempfile.gettempdir(), "wb_make_shortcut_%s.ps1" % os.getpid())
-    # utf-8-sig 写 BOM，确保 PowerShell 正确识别中文路径
-    icon_path = exe_path  # 快捷方式图标直接用主程序 exe 的图标
     script = (
         '$ws = New-Object -ComObject WScript.Shell\n'
         '$s = $ws.CreateShortcut("%s")\n'
@@ -97,7 +99,7 @@ def create_desktop_shortcut(exe_path: str, work_dir: str) -> str:
         '$s.Description = "%s"\n'
         '$s.IconLocation = "%s,0"\n'
         '$s.Save()\n'
-    ) % (lnk, exe_path, work_dir, APP_NAME, icon_path)
+    ) % (lnk, exe_path, work_dir, name, icon_path)
     with open(ps_path, "w", encoding="utf-8-sig") as f:
         f.write(script)
     try:
@@ -143,8 +145,17 @@ def run_install(install_dir: str, log_fn=print, progress_fn=None) -> dict:
         result["shortcut"] = create_desktop_shortcut(exe_path, install_dir)
         log_fn("桌面快捷方式已创建：%s" % result["shortcut"])
     except Exception as e:  # noqa: BLE001
-        result["shortcut_error"] = "快捷方式创建失败（不影响使用）：%s" % e
+        result["shortcut_error"] = "主程序快捷方式创建失败（不影响使用）：%s" % e
         log_fn(result["shortcut_error"])
+
+    # 创建更新器快捷方式
+    updater_path = os.path.join(install_dir, "更新器.exe")
+    if os.path.isfile(updater_path):
+        try:
+            updater_lnk = create_desktop_shortcut(updater_path, install_dir, name="更新器")
+            log_fn("更新器快捷方式已创建：%s" % updater_lnk)
+        except Exception as e:  # noqa: BLE001
+            log_fn("更新器快捷方式创建失败（不影响使用）：%s" % e)
 
     result["ok"] = True
     log_fn("安装完成 ✅")

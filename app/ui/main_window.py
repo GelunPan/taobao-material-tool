@@ -854,10 +854,44 @@ class MainWindow(QMainWindow):
                           _QtW.WindowType.Window)
         root = QVBoxLayout(dlg)
 
+        # ===== 顶部搜索栏 =====
+        from PyQt6.QtWidgets import QLineEdit as _QLE, QPushButton as _QPB
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(0, 0, 0, 8)
+        search_input = _QLE()
+        search_input.setPlaceholderText("输入商品ID搜索该商品用了哪些图...")
+        search_input.setClearButtonEnabled(True)
+        search_input.setStyleSheet("QLineEdit { padding: 6px 10px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 13px; } QLineEdit:focus { border-color: #1677ff; }")
+        btn_search = _QPB("搜索")
+        btn_search.setFixedWidth(70)
+        btn_search.setStyleSheet("QPushButton { background: #1677ff; color: white; border: none; padding: 6px; border-radius: 4px; font-size: 13px; } QPushButton:hover { background: #4096ff; } QPushButton:pressed { background: #0958d9; }")
+        btn_clear_search = _QPB("清除")
+        btn_clear_search.setFixedWidth(70)
+        btn_clear_search.setStyleSheet("QPushButton { background: #f5f5f5; color: #333; border: 1px solid #d9d9d9; padding: 6px; border-radius: 4px; font-size: 13px; } QPushButton:hover { background: #e8e8e8; }")
+        search_count_label = QLabel("")
+        search_count_label.setStyleSheet("color: #1677ff; font-size: 12px;")
+        top_bar.addWidget(search_input, 1)
+        top_bar.addWidget(btn_search)
+        top_bar.addWidget(btn_clear_search)
+        top_bar.addWidget(search_count_label)
+        root.addLayout(top_bar)
+
+        def _do_search():
+            search_text["value"] = search_input.text().strip()
+            render_grid()
+        btn_search.clicked.connect(_do_search)
+        search_input.returnPressed.connect(_do_search)
+        def _clear_search():
+            search_input.clear()
+            search_text["value"] = ""
+            render_grid()
+        btn_clear_search.clicked.connect(_clear_search)
+
         # 数据：分类列表 + 图片->分类映射
         cats = self.repo.image_categories
         cat_map = self.repo.image_category_map
         current_cat = {"name": "全部图片"}  # 当前选中分类
+        search_text = {"value": ""}  # 商品ID搜索关键词
 
         # ===== 左右布局 =====
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -959,9 +993,13 @@ class MainWindow(QMainWindow):
         def collect_items():
             its = []
             seen_md5 = set()  # 按内容MD5去重
+            kw = search_text["value"].lower()
             for shop, cat, records in [(s, c, rs) for s, sd in self.repo.shops.items() for c, rs in sd.items()]:
                 for r in records:
                     item_id = r.get("product_id") or r.get("item_id") or ""
+                    # 商品ID搜索过滤
+                    if kw and kw not in item_id.lower():
+                        continue
                     for pp in (r.get("image_paths") or []):
                         if not pp:
                             continue
@@ -1151,8 +1189,17 @@ class MainWindow(QMainWindow):
                 if w is not host and w.parent() is None:
                     w.deleteLater()
             its = collect_items()
+            # 更新搜索结果计数
+            if search_text["value"]:
+                # 统计这些图的总使用次数
+                um = usage_map()
+                total_uses = sum(len(um.get(p, [])) for p, _ in its)
+                search_count_label.setText(f"找到 {len(its)} 张图，共使用 {total_uses} 次")
+            else:
+                search_count_label.setText("")
             if not its:
-                grid.addWidget(QLabel("暂无图片"), 0, 0)
+                tip = "暂无图片" if not search_text["value"] else f"未找到商品ID「{search_text['value']}」相关的图片"
+                grid.addWidget(QLabel(tip), 0, 0)
                 return
             umap = usage_map()
             cols = 5

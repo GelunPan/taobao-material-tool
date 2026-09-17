@@ -848,13 +848,12 @@ class MainWindow(QMainWindow):
         def _sync_loading_geo():
             loading_overlay.setGeometry(dlg.rect())
         _sync_loading_geo()
-        # 用 eventFilter 监听 resize，同步覆盖层大小
-        class _DlgEF:
-            def eventFilter(self, obj, ev):
-                if ev.type() == ev.Type.Resize:
-                    _sync_loading_geo()
-                return False
-        dlg.installEventFilter(_DlgEF())
+        # 重写 resizeEvent 同步覆盖层大小
+        _orig_resize = dlg.resizeEvent
+        def _dlg_resize(ev):
+            _sync_loading_geo()
+            _orig_resize(ev)
+        dlg.resizeEvent = _dlg_resize
         from PyQt6.QtCore import Qt as _QtW
         dlg.setWindowFlags(_QtW.WindowType.WindowMinimizeButtonHint |
                           _QtW.WindowType.WindowMaximizeButtonHint |

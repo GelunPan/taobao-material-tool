@@ -102,6 +102,20 @@ class SpecListEditor(QWidget):
         if not pieces:
             self._add_row("")
 
+    def set_spec_list(self, items: list) -> None:
+        """直接从列表加载每一行规格（复制记录时用）"""
+        while self._lay.count() > 1:
+            item = self._lay.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._rows.clear()
+        for it in (items or []):
+            if it and it.strip():
+                self._add_row(it.strip())
+        if not items:
+            self._add_row("")
+
     def spec_text(self) -> str:
         pieces = []
         for e in self._rows:
@@ -345,7 +359,11 @@ class AddRecordDialog(QDialog):
     def _load_record(self, record: dict) -> None:
         """预填已有记录的内容（修改模式）"""
         self.product_id_input.setText(record.get("product_id", ""))
-        self.spec_input.set_spec(record.get("spec", ""))
+        _opts = record.get("spec_options") or []
+        if _opts:
+            self.spec_input.set_spec_list(_opts)
+        else:
+            self.spec_input.set_spec(record.get("spec", ""))
         self.title_input.setText(record.get("title", ""))
         self.helper_input.setText(record.get("helper", ""))
         self.review_input.setPlainText(record.get("review", ""))

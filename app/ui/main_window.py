@@ -1152,12 +1152,17 @@ class MainWindow(QMainWindow):
             if changed:
                 self.repo.save()
 
-        # 打开时显示加载动画
+        # 打开时显示加载动画（用singleShot延迟耗时操作，让动画先转起来）
         loading_overlay.show_with_text("正在加载图片...\n（首次加载较慢，请稍候）")
         loading_overlay.raise_()
         QApplication.processEvents()
-        # 打开时做一次去重（感知哈希很慢，不能每次render_grid都做）
-        dedupe_external_images()
+        def _do_load():
+            # 打开时做一次去重（感知哈希很慢，不能每次render_grid都做）
+            dedupe_external_images()
+            refresh_cat_list()
+            render_grid()
+            loading_overlay.hide_overlay()
+        QTimer.singleShot(80, _do_load)
 
         def render_grid():
             # 彻底清空旧内容
@@ -1310,10 +1315,16 @@ class MainWindow(QMainWindow):
             host.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             host.customContextMenuRequested.connect(grid_context_menu)
 
-        refresh_cat_list()
-        render_grid()
-        loading_overlay.hide_overlay()  # 加载完成，隐藏动画
-        refresh_btn.clicked.connect(render_grid)
+        # refresh_cat_list/render_grid 已在 _do_load 里调用
+        refresh_btn.clicked.connect(lambda: (
+            loading_overlay.show_with_text("正在刷新..."),
+            loading_overlay.raise_(),
+            QApplication.processEvents(),
+            QTimer.singleShot(50, lambda: (
+                render_grid(),
+                loading_overlay.hide_overlay()
+            ))
+        ))
         self.image_library_changed.connect(render_grid)
 
         def open_search_dialog():
@@ -1381,13 +1392,15 @@ class MainWindow(QMainWindow):
                 if not kw:
                     return
                 search_text["value"] = kw
-                # 显示加载动画
+                # 显示加载动画（用singleShot延迟，让动画先转起来）
                 loading_overlay.show_with_text("正在搜索...")
                 loading_overlay.raise_()
                 QApplication.processEvents()
-                render_grid()
-                loading_overlay.hide_overlay()
-                sd.accept()
+                def _do():
+                    render_grid()
+                    loading_overlay.hide_overlay()
+                    sd.accept()
+                QTimer.singleShot(80, _do)
 
             def clear_text_search():
                 text_input.clear()
@@ -1395,9 +1408,11 @@ class MainWindow(QMainWindow):
                 loading_overlay.show_with_text("正在刷新...")
                 loading_overlay.raise_()
                 QApplication.processEvents()
-                render_grid()
-                loading_overlay.hide_overlay()
-                sd.accept()
+                def _do():
+                    render_grid()
+                    loading_overlay.hide_overlay()
+                    sd.accept()
+                QTimer.singleShot(80, _do)
 
             btn_text_search.clicked.connect(do_text_search)
             btn_text_clear.clicked.connect(clear_text_search)
@@ -1478,10 +1493,13 @@ class MainWindow(QMainWindow):
                     return
                 result.setText("搜索中...")
                 result_list.clear()
-                # 显示加载动画
+                # 显示加载动画（用singleShot延迟，让动画先转起来）
                 loading_overlay.show_with_text("正在按图搜索...\n（感知哈希匹配中）")
                 loading_overlay.raise_()
                 QApplication.processEvents()
+                QTimer.singleShot(80, _run_img_search)
+                return
+            def _run_img_search():
                 def _ph(im):
                     im = im.scaled(8, 8)
                     g = im.convertToFormat(_QI.Format.Format_Grayscale8)
@@ -1491,7 +1509,7 @@ class MainWindow(QMainWindow):
                     for i, v in enumerate(px):
                         if v >= avg: b |= (1 << i)
                     return b
-                hq = _ph(img)
+                hq = _ph(state["img"])
                 best, bd = None, 999
                 from pathlib import Path as _P2
                 for f in _P2(self.repo.images_dir).glob("image_*"):

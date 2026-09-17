@@ -854,44 +854,11 @@ class MainWindow(QMainWindow):
                           _QtW.WindowType.Window)
         root = QVBoxLayout(dlg)
 
-        # ===== 顶部搜索栏 =====
-        from PyQt6.QtWidgets import QLineEdit as _QLE, QPushButton as _QPB
-        top_bar = QHBoxLayout()
-        top_bar.setContentsMargins(0, 0, 0, 8)
-        search_input = _QLE()
-        search_input.setPlaceholderText("输入商品ID搜索该商品用了哪些图...")
-        search_input.setClearButtonEnabled(True)
-        search_input.setStyleSheet("QLineEdit { padding: 6px 10px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 13px; } QLineEdit:focus { border-color: #1677ff; }")
-        btn_search = _QPB("搜索")
-        btn_search.setFixedWidth(70)
-        btn_search.setStyleSheet("QPushButton { background: #1677ff; color: white; border: none; padding: 6px; border-radius: 4px; font-size: 13px; } QPushButton:hover { background: #4096ff; } QPushButton:pressed { background: #0958d9; }")
-        btn_clear_search = _QPB("清除")
-        btn_clear_search.setFixedWidth(70)
-        btn_clear_search.setStyleSheet("QPushButton { background: #f5f5f5; color: #333; border: 1px solid #d9d9d9; padding: 6px; border-radius: 4px; font-size: 13px; } QPushButton:hover { background: #e8e8e8; }")
-        search_count_label = QLabel("")
-        search_count_label.setStyleSheet("color: #1677ff; font-size: 12px;")
-        top_bar.addWidget(search_input, 1)
-        top_bar.addWidget(btn_search)
-        top_bar.addWidget(btn_clear_search)
-        top_bar.addWidget(search_count_label)
-        root.addLayout(top_bar)
-
-        def _do_search():
-            search_text["value"] = search_input.text().strip()
-            render_grid()
-        btn_search.clicked.connect(_do_search)
-        search_input.returnPressed.connect(_do_search)
-        def _clear_search():
-            search_input.clear()
-            search_text["value"] = ""
-            render_grid()
-        btn_clear_search.clicked.connect(_clear_search)
-
         # 数据：分类列表 + 图片->分类映射
         cats = self.repo.image_categories
         cat_map = self.repo.image_category_map
         current_cat = {"name": "全部图片"}  # 当前选中分类
-        search_text = {"value": ""}  # 商品ID搜索关键词
+        search_text = {"value": "", "type": "product_id"}  # 搜索关键词 + 类型(product_id/title)
 
         # ===== 左右布局 =====
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -969,7 +936,7 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QStyle as _QStyle
         refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardPixmap.SP_BrowserReload))
         toolbar.addWidget(refresh_btn)
-        search_btn = QPushButton("🔍 搜索图片")
+        search_btn = QPushButton("🔍 搜索")
         toolbar.addWidget(search_btn)
         rlay.addLayout(toolbar)
 
@@ -997,9 +964,15 @@ class MainWindow(QMainWindow):
             for shop, cat, records in [(s, c, rs) for s, sd in self.repo.shops.items() for c, rs in sd.items()]:
                 for r in records:
                     item_id = r.get("product_id") or r.get("item_id") or ""
-                    # 商品ID搜索过滤
-                    if kw and kw not in item_id.lower():
-                        continue
+                    title = r.get("title") or ""
+                    # 搜索过滤：商品ID 或 标题
+                    if kw:
+                        if search_text["type"] == "title":
+                            if kw not in title.lower():
+                                continue
+                        else:
+                            if kw not in item_id.lower():
+                                continue
                     for pp in (r.get("image_paths") or []):
                         if not pp:
                             continue
@@ -1046,10 +1019,9 @@ class MainWindow(QMainWindow):
 
         def goto_record(shop, cat, rec_idx):
             dlg.accept()
-            self.select_shop_in_tree(shop)
-            if hasattr(self, "_set_category"):
-                self._set_category(cat)
-            QTimer.singleShot(200, lambda: self.table.selectRow(rec_idx))
+            # 直接选中店铺+目标分类（只刷新一次表格，避免先选第一个分类再切目标分类的竞争）
+            self.select_shop_in_tree(shop, cat)
+            QTimer.singleShot(300, lambda: self.table.selectRow(rec_idx))
 
         def delete_image(path):
             ret = QMessageBox.question(dlg, "删除图片",
@@ -1175,8 +1147,10 @@ class MainWindow(QMainWindow):
             if changed:
                 self.repo.save()
 
+        # 打开时做一次去重（感知哈希很慢，不能每次render_grid都做）
+        dedupe_external_images()
+
         def render_grid():
-            dedupe_external_images()
             # 彻底清空旧内容
             while grid.count():
                 it = grid.takeAt(0)
@@ -1189,16 +1163,11 @@ class MainWindow(QMainWindow):
                 if w is not host and w.parent() is None:
                     w.deleteLater()
             its = collect_items()
-            # 更新搜索结果计数
-            if search_text["value"]:
-                # 统计这些图的总使用次数
-                um = usage_map()
-                total_uses = sum(len(um.get(p, [])) for p, _ in its)
-                search_count_label.setText(f"找到 {len(its)} 张图，共使用 {total_uses} 次")
-            else:
-                search_count_label.setText("")
             if not its:
-                tip = "暂无图片" if not search_text["value"] else f"未找到商品ID「{search_text['value']}」相关的图片"
+                tip = "暂无图片"
+                if search_text["value"]:
+                    field = "标题" if search_text["type"] == "title" else "商品ID"
+                    tip = f"未找到{field}「{search_text['value']}」相关的图片"
                 grid.addWidget(QLabel(tip), 0, 0)
                 return
             umap = usage_map()
@@ -1322,24 +1291,128 @@ class MainWindow(QMainWindow):
         self.image_library_changed.connect(render_grid)
 
         def open_search_dialog():
-            from PyQt6.QtWidgets import (QDialog as _D, QVBoxLayout as _V, QLabel as _L,
-                QPushButton as _PB, QListWidget as _LW, QListWidgetItem as _LWI,
-                QMessageBox as _MB, QSizePolicy)
+            from PyQt6.QtWidgets import (QDialog as _D, QVBoxLayout as _V, QHBoxLayout as _H,
+                QLabel as _L, QPushButton as _PB, QListWidget as _LW, QListWidgetItem as _LWI,
+                QComboBox as _CB, QLineEdit as _LE, QSplitter as _SP, QWidget as _W)
             from PyQt6.QtGui import QImage as _QI, QPixmap as _QP
             from PyQt6.QtCore import Qt as _Qt
-            sd = _D()
-            sd.setWindowTitle("搜索图片")
-            sd.resize(500, 500)
-            sd.setMinimumSize(350, 350)
-            lay = _V(sd)
+
+            sd = _D(dlg)
+            sd.setWindowTitle("搜索")
+            sd.resize(820, 560)
+            sd.setMinimumSize(700, 480)
+
+            root_lay = _V(sd)
+            root_lay.setContentsMargins(12, 12, 12, 12)
+
+            # 标题
+            title = _L("🔍 搜索")
+            title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1677ff;")
+            root_lay.addWidget(title)
+            root_lay.addSpacing(6)
+
+            # 左右分栏
+            splitter = _SP(_Qt.Orientation.Horizontal)
+            root_lay.addWidget(splitter, 1)
+
+            # ========== 左：文字搜索 ==========
+            left_panel = _W()
+            left_lay = _V(left_panel)
+            left_lay.setContentsMargins(8, 0, 8, 0)
+
+            left_title = _L("📝 文字搜索")
+            left_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+            left_lay.addWidget(left_title)
+            left_lay.addSpacing(6)
+
+            # 搜索类型
+            type_row = _H()
+            type_label = _L("搜索类型：")
+            type_combo = _CB()
+            type_combo.addItems(["商品ID", "商品标题"])
+            type_combo.setStyleSheet("QComboBox { padding: 5px; border: 1px solid #d9d9d9; border-radius: 4px; }")
+            type_row.addWidget(type_label)
+            type_row.addWidget(type_combo, 1)
+            left_lay.addLayout(type_row)
+            left_lay.addSpacing(6)
+
+            # 输入框
+            text_input = _LE()
+            text_input.setPlaceholderText("输入商品ID或标题关键词...")
+            text_input.setStyleSheet("QLineEdit { padding: 8px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 13px; } QLineEdit:focus { border-color: #1677ff; }")
+            left_lay.addWidget(text_input)
+            left_lay.addSpacing(8)
+
+            # 按钮
+            btn_row = _H()
+            btn_text_search = _PB("搜索")
+            btn_text_search.setStyleSheet("QPushButton { background: #1677ff; color: white; border: none; padding: 8px; border-radius: 4px; font-size: 13px; } QPushButton:hover { background: #4096ff; }")
+            btn_text_clear = _PB("清除")
+            btn_text_clear.setStyleSheet("QPushButton { background: #f5f5f5; color: #333; border: 1px solid #d9d9d9; padding: 8px; border-radius: 4px; font-size: 13px; } QPushButton:hover { background: #e8e8e8; }")
+            btn_row.addWidget(btn_text_search)
+            btn_row.addWidget(btn_text_clear)
+            left_lay.addLayout(btn_row)
+            left_lay.addSpacing(10)
+
+            # 说明
+            tip_text = _L("搜索后自动过滤图片管理网格，\n只显示匹配的图片。\n\n蓝色角标显示使用次数，\n点击可查看使用位置。")
+            tip_text.setStyleSheet("color: #999; font-size: 12px; line-height: 1.6;")
+            tip_text.setWordWrap(True)
+            left_lay.addWidget(tip_text)
+            left_lay.addStretch()
+
+            def do_text_search():
+                kw = text_input.text().strip()
+                if not kw:
+                    return
+                search_text["type"] = "product_id" if type_combo.currentIndex() == 0 else "title"
+                search_text["value"] = kw
+                render_grid()
+                sd.accept()
+
+            def clear_text_search():
+                text_input.clear()
+                search_text["value"] = ""
+                search_text["type"] = "product_id"
+                type_combo.setCurrentIndex(0)
+                render_grid()
+                sd.accept()
+
+            btn_text_search.clicked.connect(do_text_search)
+            btn_text_clear.clicked.connect(clear_text_search)
+            text_input.returnPressed.connect(do_text_search)
+
+            splitter.addWidget(left_panel)
+
+            # 分隔线
+            line = _L("|")
+            line.setStyleSheet("color: #e0e0e0; font-size: 20px;")
+            line.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+            splitter.addWidget(line)
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 0)
+
+            # ========== 右：图片搜索 ==========
+            right_panel = _W()
+            right_lay = _V(right_panel)
+            right_lay.setContentsMargins(8, 0, 8, 0)
+
+            right_title = _L("🖼 图片搜索")
+            right_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+            right_lay.addWidget(right_title)
+            right_lay.addSpacing(6)
+
             tip = _L("粘贴图片（Ctrl+V）后点搜索")
             tip.setAlignment(_Qt.AlignmentFlag.AlignCenter)
-            lay.addWidget(tip)
+            tip.setStyleSheet("color: #666; font-size: 12px;")
+            right_lay.addWidget(tip)
+
             preview = _L("（等待粘贴图片）")
-            preview.setFixedSize(300, 300)
+            preview.setFixedSize(260, 260)
             preview.setAlignment(_Qt.AlignmentFlag.AlignCenter)
-            preview.setStyleSheet("border: 1px dashed #aaa; color: #999;")
-            lay.addWidget(preview, 0, _Qt.AlignmentFlag.AlignCenter)
+            preview.setStyleSheet("border: 1px dashed #aaa; color: #999; background: #fafafa;")
+            right_lay.addWidget(preview, 0, _Qt.AlignmentFlag.AlignCenter)
+
             state = {"img": None}
             def on_paste():
                 cb = QApplication.clipboard()
@@ -1349,10 +1422,11 @@ class MainWindow(QMainWindow):
                     return
                 state["img"] = img
                 tip.setText("已粘贴，点下方搜索按钮")
-                preview.setPixmap(_QP.fromImage(img).scaled(280, 280,
+                preview.setPixmap(_QP.fromImage(img).scaled(260, 260,
                     _Qt.AspectRatioMode.KeepAspectRatio, _Qt.TransformationMode.SmoothTransformation))
             file_btn = _PB("从文件选择图片...")
-            lay.addWidget(file_btn)
+            file_btn.setStyleSheet("QPushButton { padding: 6px; border: 1px solid #d9d9d9; border-radius: 4px; background: white; } QPushButton:hover { background: #f5f5f5; }")
+            right_lay.addWidget(file_btn)
             def pick_file():
                 from PyQt6.QtWidgets import QFileDialog as _FD
                 fp, _ = _FD.getOpenFileName(sd, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.webp *.bmp)")
@@ -1361,18 +1435,22 @@ class MainWindow(QMainWindow):
                     if not img.isNull():
                         state["img"] = img
                         tip.setText(f"已选：{os.path.basename(fp)}")
-                        preview.setPixmap(_QP.fromImage(img).scaled(280, 280,
+                        preview.setPixmap(_QP.fromImage(img).scaled(260, 260,
                             _Qt.AspectRatioMode.KeepAspectRatio, _Qt.TransformationMode.SmoothTransformation))
             file_btn.clicked.connect(pick_file)
             search_btn2 = _PB("搜索")
-            lay.addWidget(search_btn2)
+            search_btn2.setStyleSheet("QPushButton { background: #1677ff; color: white; border: none; padding: 8px; border-radius: 4px; font-size: 13px; } QPushButton:hover { background: #4096ff; }")
+            right_lay.addWidget(search_btn2)
             result = _L("")
             result.setAlignment(_Qt.AlignmentFlag.AlignCenter)
-            lay.addWidget(result)
+            result.setStyleSheet("color: #1677ff; font-size: 12px;")
+            result.setWordWrap(True)
+            right_lay.addWidget(result)
             result_list = _LW()
-            lay.addWidget(result_list)
-            sd.showEvent = lambda e: on_paste()  # 打开时自动试读剪贴板
-            def do_search():
+            result_list.setStyleSheet("QListWidget { border: 1px solid #e0e0e0; border-radius: 4px; } QListWidget::item { padding: 6px; } QListWidget::item:selected { background: #e6f4ff; color: #1677ff; }")
+            right_lay.addWidget(result_list, 1)
+            sd.showEvent = lambda e: on_paste()
+            def do_img_search():
                 img = state["img"]
                 if img is None:
                     tip.setText("请先粘贴图片（Ctrl+V）")
@@ -1380,7 +1458,6 @@ class MainWindow(QMainWindow):
                 result.setText("搜索中...")
                 result_list.clear()
                 QApplication.processEvents()
-                # 算搜索图 phash
                 def _ph(im):
                     im = im.scaled(8, 8)
                     g = im.convertToFormat(_QI.Format.Format_Grayscale8)
@@ -1391,7 +1468,6 @@ class MainWindow(QMainWindow):
                         if v >= avg: b |= (1 << i)
                     return b
                 hq = _ph(img)
-                # 索引 images_dir
                 best, bd = None, 999
                 from pathlib import Path as _P2
                 for f in _P2(self.repo.images_dir).glob("image_*"):
@@ -1402,11 +1478,9 @@ class MainWindow(QMainWindow):
                 if best is None or bd > 10:
                     result.setText("未找到相似图片")
                     return
-                # 用 usage_map 找使用位置
                 um = usage_map()
                 uses = um.get(best, [])
-                result.setText(f"匹配：{os.path.basename(best)}（汉明距离{bd}） 共使用 {len(uses)} 次")
-                state["uses"] = uses
+                result.setText(f"匹配：{os.path.basename(best)}\n汉明距离{bd}，共使用 {len(uses)} 次")
                 result_list.clear()
                 for i, (shop, cat, idx) in enumerate(uses, 1):
                     it = _LWI(f"{i}. {shop} / {cat} / 第{idx+1}条", result_list)
@@ -1416,18 +1490,27 @@ class MainWindow(QMainWindow):
                 if not data:
                     return
                 shop, cat, idx = data
-                sd.close()  # 只关搜索对话框，保留图片管理
-                self.select_shop_in_tree(shop)
-                if hasattr(self, "_set_category"):
-                    self._set_category(cat)
+                sd.close()
+                self.select_shop_in_tree(shop, cat)
                 from PyQt6.QtCore import QTimer as _QTimer
-                _QTimer.singleShot(200, lambda: self.table.selectRow(idx))
+                _QTimer.singleShot(300, lambda: self.table.selectRow(idx))
             result_list.itemDoubleClicked.connect(jump)
-            search_btn2.clicked.connect(do_search)
-            sd.setWindowFlags(sd.windowFlags() | _QtW.WindowType.WindowMinimizeButtonHint)
-            sd.show()
-            sd.raise_()
-            sd.activateWindow()
+            search_btn2.clicked.connect(do_img_search)
+
+            splitter.addWidget(right_panel)
+            splitter.setStretchFactor(2, 1)
+
+            # 底部关闭按钮
+            bottom_row = _H()
+            bottom_row.addStretch()
+            btn_close = _PB("关闭")
+            btn_close.setFixedWidth(80)
+            btn_close.setStyleSheet("QPushButton { background: #f5f5f5; color: #333; border: 1px solid #d9d9d9; padding: 6px; border-radius: 4px; } QPushButton:hover { background: #e8e8e8; }")
+            btn_close.clicked.connect(sd.accept)
+            bottom_row.addWidget(btn_close)
+            root_lay.addLayout(bottom_row)
+
+            sd.exec()
 
         search_btn.clicked.connect(open_search_dialog)
         try:

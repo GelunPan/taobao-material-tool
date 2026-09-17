@@ -563,3 +563,75 @@ git push origin main
 ## License
 
 项目仅作学习与内部使用，暂无开源协议（保留所有权利）。
+
+---
+
+## 开发环境搭建（新电脑/家里电脑）
+
+### 1. 装 Python
+
+装 **Python 3.13.x**（64位），勾 "Add Python to PATH"。
+
+### 2. 克隆代码
+
+```bash
+git clone https://jihulab.com/gelunpan/tb-tools.git
+cd tb-tools
+```
+
+### 3. 建虚拟环境
+
+```bash
+# 在项目根目录建虚拟环境
+python -m venv D:\tools\python\envs\taobao-build
+
+# 激活
+D:\tools\python\envs\taobao-build\Scripts\activate
+
+# 装依赖
+pip install PyQt6 playwright openpyxl pillow requests
+playwright install chromium
+```
+
+### 4. 跑起来
+
+```bash
+D:\TOOLS\python\python.exe main.py
+```
+
+> 注意：开发时用主 Python（`D:\TOOLS\python\python.exe`），打包用虚拟环境（`D:\tools\python\envs\taobao-build\Scripts\python.exe`）。
+
+### 5. 打包发布
+
+#### 首次完整安装包（发客户）
+
+```bash
+D:\tools\python\envs\taobao-build\Scripts\python.exe installer\build_all.py
+```
+输出：`dist/win10_x64_taobaotools_Vx.x.exe`
+
+#### 增量更新包（以后小更新）
+
+```bash
+D:\tools\python\envs\taobao-build\Scripts\python.exe installer\build_update.py
+```
+输出：`dist/tb_tools_update_Vx.x.zip`
+
+把这个 zip 发给客户，让他们放到桌面，双击桌面「更新器」图标即可自动更新。
+
+### 6. 目录说明
+
+| 目录 | 说明 |
+|------|------|
+| `app/` | 主程序源码（UI、服务、存储） |
+| `installer/` | 安装/打包脚本 |
+| `data/` | 运行时数据（gitignore） |
+| `dist/` | 打包输出（gitignore） |
+| `app/assets/` | 图标、SVG 素材（git 同步） |
+
+### 7. 更新器说明
+
+- 更新器.exe 在 `installer/更新器.exe`，已打进 git
+- 首次安装时它会被释放到安装目录，桌面创建「更新器」快捷方式
+- 更新时它自动找桌面/下载目录的 `tb_tools_update_V*.zip`
+- 版本号在 `app/config.py` 的 `APP_VERSION`，每次发版前改一下

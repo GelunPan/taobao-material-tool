@@ -126,6 +126,8 @@ def build_app():
         if not sample_shops:
             print("[warn] 没找到名为「示例」的店铺，将打包空数据")
         data["shops"] = sample_shops
+        data["image_categories"] = data.get("image_categories", [])
+        data["image_category_map"] = {}
         # 收集示例数据引用的所有图片（只复制被引用的，不复制整个 images 目录）
         # 注意：data.json 里保持原始绝对路径不变，由应用端图片加载时做 fallback
         image_fields = ["spec_image", "link_image", "image_paths"]

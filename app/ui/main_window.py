@@ -1013,8 +1013,6 @@ class MainWindow(QMainWindow):
         toolbar.addStretch(1)
         refresh_btn = RefreshIconButton(str(config.ASSETS_DIR / "refresh.svg"), 18)
         refresh_btn.setToolTip("刷新图片列表")
-        from PyQt6.QtWidgets import QStyle as _QStyle
-        refresh_btn.setIcon(dlg.style().standardIcon(_QStyle.StandardPixmap.SP_BrowserReload))
         toolbar.addWidget(refresh_btn)
         search_btn = QPushButton("🔍 搜索")
         toolbar.addWidget(search_btn)

@@ -755,13 +755,7 @@ class MainWindow(QMainWindow):
         self.act_screenshot_history = self.export_menu.addAction("截图历史")
         self.act_screenshot_history.setToolTip("查看所有历史截图：大图预览、滚轮缩放、另存为")
         self.btn_export.setMenu(self.export_menu)
-        # 更新测试按钮
-        self.btn_update_test = QPushButton("更新测试")
-        self.btn_update_test.setStyleSheet(
-            "QPushButton { background:#ff9800; color:white; border:none; padding:6px 14px; border-radius:4px; }"
-        )
-        self.btn_update_test.clicked.connect(
-            lambda: QMessageBox.information(self, "更新测试", "✅ 更新器更新测试成功！当前版本 v1.3"))
+        # 更新测试按钮（已移除，正式环境不需要）
         # 主操作按钮样式
         self.btn_product.setProperty("primary", True)
         self.btn_export.setProperty("primary", True)
@@ -787,7 +781,7 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(self.btn_search)
         bottom_layout.addWidget(self.btn_clear_search)
         bottom_layout.addWidget(self.btn_export)
-        bottom_layout.addWidget(self.btn_update_test)
+        # bottom_layout.addWidget(self.btn_update_test)  # 已移除
         right_layout.addLayout(bottom_layout)
 
         self.btn_taobao_login.clicked.connect(self.on_taobao_login)

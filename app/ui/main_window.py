@@ -563,7 +563,7 @@ class MainWindow(QMainWindow):
         # 刷新按钮：点击旋转一圈，刷新店铺树分类记录条数统计
         self.btn_refresh_tree = RefreshIconButton(str(config.ASSETS_DIR / "refresh.svg"), 18)
         self.btn_refresh_tree.setToolTip("刷新店铺分类记录条数")
-        self.btn_refresh_tree.clicked.connect(self.rebuild_shop_tree)
+        self.btn_refresh_tree.clicked.connect(self.refresh_shop_tree)
         title_row.addWidget(self.btn_refresh_tree)
         title_row.addWidget(self.btn_toggle_tree)
         left_layout.addLayout(title_row)
@@ -595,6 +595,7 @@ class MainWindow(QMainWindow):
         )
         self.act_add_shop = self.shop_mgmt_menu.addAction("➕ 新增店铺")
         self.act_img_mgmt = self.shop_mgmt_menu.addAction("🖼 图片管理")
+        self.act_stats = self.shop_mgmt_menu.addAction("📊 数据统计")
         from PyQt6.QtGui import QCursor
         from PyQt6.QtCore import QPoint
         def _show_menu():
@@ -606,7 +607,18 @@ class MainWindow(QMainWindow):
         self.btn_shop_mgmt.clicked.connect(_show_menu)
         self.act_add_shop.triggered.connect(lambda: self.on_add_shop())
         self.act_img_mgmt.triggered.connect(self._open_image_manager)
+        self.act_stats.triggered.connect(self._open_stats_dialog)
         left_layout.addWidget(self.btn_shop_mgmt)
+
+        # 数据统计按钮
+        self.btn_stats = QPushButton("📊 数据统计")
+        self.btn_stats.setStyleSheet(
+            "QPushButton { background: #67C23A; color: white; border: none; padding: 8px; "
+            "border-radius: 4px; font-size: 13px; font-weight: bold; }"
+            "QPushButton:hover { background: #85ce61; }"
+        )
+        self.btn_stats.clicked.connect(self._open_stats_dialog)
+        left_layout.addWidget(self.btn_stats)
         return left_widget
 
     def _build_collapsed_rail(self):
@@ -884,6 +896,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", f"数据保存失败：{str(e)}")
 
     # ==================== 店铺管理 ====================
+    def _open_stats_dialog(self):
+        """打开数据统计对话框（带动画的扇形图）"""
+        from .stats_dialog import StatsDialog
+        dialog = StatsDialog(self.repo, self)
+        dialog.exec()
+
     def _open_image_manager(self):
         """图片管理：分类+网格预览"""
         from PyQt6.QtWidgets import (

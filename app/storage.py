@@ -187,6 +187,10 @@ class ShopRepository:
     def add_record(self, shop_name: str, category: str | None, record: dict) -> None:
         self.ensure_shop(shop_name, category)
         self.shops[shop_name].setdefault(category or self.first_category(shop_name), [])
+        # 自动记录创建时间（用于按月统计）
+        if "created_at" not in record:
+            from datetime import datetime
+            record["created_at"] = datetime.now().strftime("%Y-%m")
         self.shops[shop_name][category or self.first_category(shop_name)].append(record)
 
     def insert_record(self, shop_name: str, category: str | None,
@@ -196,6 +200,9 @@ class ShopRepository:
         key = category or self.first_category(shop_name)
         records = self.shops[shop_name].setdefault(key, [])
         pos = max(0, min(after_index + 1, len(records)))
+        # 复制记录时更新创建时间为当前
+        from datetime import datetime
+        record["created_at"] = datetime.now().strftime("%Y-%m")
         records.insert(pos, record)
         return pos
 

@@ -595,7 +595,6 @@ class MainWindow(QMainWindow):
         )
         self.act_add_shop = self.shop_mgmt_menu.addAction("➕ 新增店铺")
         self.act_img_mgmt = self.shop_mgmt_menu.addAction("🖼 图片管理")
-        self.act_stats = self.shop_mgmt_menu.addAction("📊 数据统计")
         from PyQt6.QtGui import QCursor
         from PyQt6.QtCore import QPoint
         def _show_menu():
@@ -607,11 +606,10 @@ class MainWindow(QMainWindow):
         self.btn_shop_mgmt.clicked.connect(_show_menu)
         self.act_add_shop.triggered.connect(lambda: self.on_add_shop())
         self.act_img_mgmt.triggered.connect(self._open_image_manager)
-        self.act_stats.triggered.connect(self._open_stats_dialog)
         left_layout.addWidget(self.btn_shop_mgmt)
 
         # 数据统计按钮
-        self.btn_stats = QPushButton("📊 数据统计")
+        self.btn_stats = QPushButton("📊 数据统计  🚧开发中")
         self.btn_stats.setStyleSheet(
             "QPushButton { background: #67C23A; color: white; border: none; padding: 8px; "
             "border-radius: 4px; font-size: 13px; font-weight: bold; }"

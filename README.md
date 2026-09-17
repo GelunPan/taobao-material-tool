@@ -281,6 +281,49 @@ Windows 会锁定「正在运行」的 exe 文件。若之前跑过 `--test` 或
 - 创建快捷方式时 PowerShell 输出是 GBK，用 `capture_output=True` 会让 Python 读取线程解码失败并**永久挂起**
   → 已改为 `stdout/stderr=DEVNULL`（**这个坑会让真实安装卡在「创建快捷方式」**）
 
+#### 🔴 坑 5：增量更新包打包前必须先有 prev 快照（v1.2→v1.3 实测流程）
+
+`build_update.py` 靠对比 `dist/tb-tool2/`（新构建）和 `dist/tb-tool2_prev/`（上次构建快照）来生成增量包。
+**如果 prev 快照不存在或不是上一个正式版，打出来的更新包会包含全部文件（几百 MB），失去增量意义。**
+
+正确的 v1.2→v1.3 打包流程（实测通过）：
+
+```bash
+# 1. 代码切到 v1.2（改 config.py 版本号 + 注释掉 v1.3 测试按钮）
+# 2. 打 v1.2 完整安装程序
+D:\tools\python\envs\taobao-build\Scripts\python.exe installer\build_all.py
+# 3. 把 v1.2 构建结果复制为 prev 快照（关键！build_update.py 靠它对比）
+Copy-Item -Recurse dist\tb-tool2 dist\tb-tool2_prev
+# 4. 代码切回 v1.3（恢复版本号 + 恢复测试按钮）
+# 5. 打 v1.3 增量更新包
+D:\tools\python\envs\taobao-build\Scripts\python.exe installer\build_update.py
+# 产物：dist/tb_tools_update_V1.3.0.zip（实测只有 6.1 MB，因为只有1个文件变化）
+```
+
+> **注意**：`build_update.py` 最后会自动用新构建覆盖 prev 快照，所以下次打更新包时 prev 已经是 v1.3 了。
+> 如果要重新打 v1.2→v1.3 的包，需要重新从 v1.2 安装程序解压出 prev 快照。
+
+#### 坑 6：更新器找安装目录依赖注册表，`--test` 安装的不会写注册表
+
+更新器 `find_install_dir()` 优先从注册表 `Uninstall` 键找安装位置，其次从桌面快捷方式解析，最后才用默认路径。
+用安装程序的 `--test <目录>` 模式做本地测试时，**不会写注册表**，更新器直接运行会找不到安装目录。
+
+本地测试更新功能的正确姿势：
+
+```python
+# 直接调用 updater.do_update，传入测试目录，绕过 GUI 确认和注册表查找
+import sys
+sys.path.insert(0, 'installer')
+from updater import do_update, get_current_version
+
+ok, msg = do_update(r'D:\test_update_v12',
+                    log_fn=lambda m: print(m),
+                    progress_cb=lambda d, t: print(f'{d}/{t}'))
+print('更新后版本:', get_current_version(r'D:\test_update_v12'))
+```
+
+实测 v1.2→v1.3 更新：version.txt 从 1.2.0 变为 1.3.0，`data/` 目录（用户数据）完整保留，更新功能正常。
+
 ### 打包后自检
 
 ```bash

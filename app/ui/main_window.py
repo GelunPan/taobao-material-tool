@@ -841,6 +841,20 @@ class MainWindow(QMainWindow):
         dlg = QDialog()
         dlg.setWindowTitle("图片管理")
         dlg.resize(1200, 750)
+
+        # 加载动画覆盖层（复用全局 _LoadingOverlay）
+        loading_overlay = _LoadingOverlay(dlg)
+        loading_overlay.hide()
+        def _sync_loading_geo():
+            loading_overlay.setGeometry(dlg.rect())
+        _sync_loading_geo()
+        # 用 eventFilter 监听 resize，同步覆盖层大小
+        class _DlgEF:
+            def eventFilter(self, obj, ev):
+                if ev.type() == ev.Type.Resize:
+                    _sync_loading_geo()
+                return False
+        dlg.installEventFilter(_DlgEF())
         from PyQt6.QtCore import Qt as _QtW
         dlg.setWindowFlags(_QtW.WindowType.WindowMinimizeButtonHint |
                           _QtW.WindowType.WindowMaximizeButtonHint |
@@ -1141,6 +1155,9 @@ class MainWindow(QMainWindow):
             if changed:
                 self.repo.save()
 
+        # 打开时显示加载动画
+        loading_overlay.show_with_text("正在加载图片...\n（首次加载较慢，请稍候）")
+        QApplication.processEvents()
         # 打开时做一次去重（感知哈希很慢，不能每次render_grid都做）
         dedupe_external_images()
 
@@ -1281,6 +1298,7 @@ class MainWindow(QMainWindow):
 
         refresh_cat_list()
         render_grid()
+        loading_overlay.hide_overlay()  # 加载完成，隐藏动画
         refresh_btn.clicked.connect(render_grid)
         self.image_library_changed.connect(render_grid)
 
@@ -1361,7 +1379,11 @@ class MainWindow(QMainWindow):
                     return
                 search_text["type"] = "product_id" if type_combo.currentIndex() == 0 else "title"
                 search_text["value"] = kw
+                # 显示加载动画
+                loading_overlay.show_with_text("正在搜索...")
+                QApplication.processEvents()
                 render_grid()
+                loading_overlay.hide_overlay()
                 sd.accept()
 
             def clear_text_search():
@@ -1369,7 +1391,10 @@ class MainWindow(QMainWindow):
                 search_text["value"] = ""
                 search_text["type"] = "product_id"
                 type_combo.setCurrentIndex(0)
+                loading_overlay.show_with_text("正在刷新...")
+                QApplication.processEvents()
                 render_grid()
+                loading_overlay.hide_overlay()
                 sd.accept()
 
             btn_text_search.clicked.connect(do_text_search)
@@ -1451,6 +1476,8 @@ class MainWindow(QMainWindow):
                     return
                 result.setText("搜索中...")
                 result_list.clear()
+                # 显示加载动画
+                loading_overlay.show_with_text("正在按图搜索...\n（感知哈希匹配中）")
                 QApplication.processEvents()
                 def _ph(im):
                     im = im.scaled(8, 8)
@@ -1470,6 +1497,7 @@ class MainWindow(QMainWindow):
                     if d < bd:
                         bd, best = d, str(f)
                 if best is None or bd > 10:
+                    loading_overlay.hide_overlay()
                     result.setText("未找到相似图片")
                     return
                 um = usage_map()
@@ -1479,6 +1507,7 @@ class MainWindow(QMainWindow):
                 for i, (shop, cat, idx) in enumerate(uses, 1):
                     it = _LWI(f"{i}. {shop} / {cat} / 第{idx+1}条", result_list)
                     it.setData(0, (shop, cat, idx))
+                loading_overlay.hide_overlay()  # 搜索完成，隐藏动画
             def jump(item):
                 data = item.data(0)
                 if not data:

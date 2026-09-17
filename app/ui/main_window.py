@@ -836,7 +836,7 @@ class MainWindow(QMainWindow):
             QInputDialog, QMenu, QCheckBox, QWidget as _W
         )
         from .image_utils import scaled_pixmap
-        dlg = QDialog(self)
+        dlg = QDialog()
         dlg.setWindowTitle("图片管理")
         dlg.resize(1200, 750)
         from PyQt6.QtCore import Qt as _QtW
@@ -1270,7 +1270,7 @@ class MainWindow(QMainWindow):
                 QMessageBox as _MB, QSizePolicy)
             from PyQt6.QtGui import QImage as _QI, QPixmap as _QP
             from PyQt6.QtCore import Qt as _Qt
-            sd = _D(dlg)
+            sd = _D()
             sd.setWindowTitle("搜索图片")
             sd.resize(500, 500)
             sd.setMinimumSize(350, 350)
@@ -1359,8 +1359,7 @@ class MainWindow(QMainWindow):
                 if not data:
                     return
                 shop, cat, idx = data
-                sd.close()
-                dlg.close()
+                sd.close()  # 只关搜索对话框，保留图片管理
                 self.select_shop_in_tree(shop)
                 if hasattr(self, "_set_category"):
                     self._set_category(cat)

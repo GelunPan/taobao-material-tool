@@ -210,7 +210,7 @@ D:\tools\python\envs\taobao-build\Scripts\python.exe installer\build_all.py
 python installer/build_all.py
 ```
 
-产物：`dist/win10_x64_taobaotools_V1.2.exe`
+产物：`dist/win10_x64_taobaotools_Vx.x_initial.exe`
 （**单个 exe 安装程序**，约 270MB——PyInstaller 把完整应用压缩内嵌，双击即运行，无需附带任何文件夹；首次启动会自解压到临时目录，属一次性开销）
 
 ### 安装程序工作流
@@ -285,7 +285,7 @@ Windows 会锁定「正在运行」的 exe 文件。若之前跑过 `--test` 或
 
 ```bash
 # 无界面跑完整安装流程（解压 + 桌面快捷方式），验证产物是否可用
-dist/win10_x64_taobaotools_V1.2.exe --test D:/tmp_test_install
+dist/win10_x64_taobaotools_Vx.x_initial.exe --test D:/tmp_test_install
 ```
 
 重点确认：`_internal/app/style.qss` 是**文件**而不是目录（坑 1 的直接验证点）。
@@ -477,12 +477,15 @@ git push origin main
 1. 把更新包 `tb_tools_update_Vx.x.zip` 发给客户
 2. 客户把 zip 放到**桌面**（更新器也会自动搜下载目录）
 3. 客户双击桌面「**更新器**」图标
-4. 更新器自动：
+4. 更新器先弹**确认对话框**（防止误触），点"是"才开始更新
+5. 更新器自动：
    - 找桌面/下载目录里 `tb_tools_update_V*.zip`
    - 读 zip 里的版本号，和当前安装的 `version.txt` 对比
    - 新版本号 ≤ 当前版本 → 拒绝更新
    - 关主程序 → 解压覆盖改动文件（**跳过 `data/` 目录，用户数据不丢**）→ 写新版本号 → 自动重启主程序
-5. 更新完成，主程序自动打开
+6. 更新完成，主程序自动打开
+
+> 首次安装后桌面会有**两个快捷方式**：「淘宝评价工具」和「更新器」。
 
 ### 开发者发版流程（每次小更新都这么走）
 

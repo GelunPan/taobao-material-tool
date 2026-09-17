@@ -164,16 +164,28 @@ def build_app():
             json.dump(data, f, ensure_ascii=False, indent=2)
         print(f"已打包示例数据：只保留「示例」店铺，引用图片 {copied} 张")
 
+    # 把主程序 exe 重命名为中文名
+    src_exe = os.path.join(DIST_APP, "tb-tool2.exe")
+    dst_exe = os.path.join(DIST_APP, "淘宝评价工具.exe")
+    if os.path.isfile(src_exe):
+        if os.path.isfile(dst_exe):
+            os.remove(dst_exe)
+        os.rename(src_exe, dst_exe)
+        print("主程序 exe 已重命名为：淘宝评价工具.exe")
+
     # 把更新器.exe 复制到主程序目录（安装时一起释放）
     updater_src = os.path.join(ROOT, "installer", "更新器.exe")
     if os.path.isfile(updater_src):
         shutil.copy2(updater_src, os.path.join(DIST_APP, "更新器.exe"))
         print("已包含更新器.exe")
 
-    # 写 version.txt
-    from app.config import APP_VERSION
+    # 写 version.txt（直接读 config.py 里的 APP_VERSION）
+    import re as _re
+    cfg = open(os.path.join(ROOT, "app", "config.py"), encoding="utf-8").read()
+    m = _re.search(r'APP_VERSION\s*=\s*"([^"]+)"', cfg)
+    ver = m.group(1) if m else "0.0.0"
     with open(os.path.join(DIST_APP, "version.txt"), "w", encoding="utf-8") as f:
-        f.write(APP_VERSION)
+        f.write(ver)
 
     print("主程序已生成：", DIST_APP)
 

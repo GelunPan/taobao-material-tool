@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QProgressBar,
     QVBoxLayout, QHBoxLayout, QMessageBox, QTextEdit,
 )
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 
 APP_NAME = "淘宝评价工具"
 EXE_NAME = APP_NAME + ".exe"
@@ -194,11 +194,12 @@ def do_update(install_dir, log_fn, progress_cb) -> tuple:
 
     log_fn(f"更新完成，覆盖了 {copied} 个文件")
 
-    # 7. 重启主程序
+    # 7. 重启主程序（完全脱离更新器进程，避免两个 GUI 同时启动卡死）
     exe = os.path.join(install_dir, EXE_NAME)
     if os.path.isfile(exe):
         log_fn("正在启动主程序…")
-        subprocess.Popen([exe], cwd=install_dir)
+        DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen([exe], cwd=install_dir, creationflags=DETACHED, close_fds=True)
     return True, f"已更新到 v{new_ver}"
 
 
@@ -254,6 +255,17 @@ class UpdaterWindow(QWidget):
         self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
 
     def _run(self):
+        # 先弹确认，防止误触直接更新
+        reply = QMessageBox.question(
+            self, "确认更新",
+            "检测到更新包，是否立即更新？\n\n更新过程中会自动关闭主程序，请勿操作电脑。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            self._log("用户取消更新，退出。")
+            QTimer.singleShot(500, self._quit)
+            return
         self.worker = UpdateWorker()
         self.worker.log.connect(self._log)
         self.worker.progress.connect(lambda d, t: self.bar.setValue(int(d / t * 100) if t else 0))
@@ -264,10 +276,16 @@ class UpdaterWindow(QWidget):
         self.bar.setValue(100)
         self.close_btn.setEnabled(True)
         if ok:
-            QMessageBox.information(self, "更新完成", msg)
-            self.close()
+            # 主程序已被独立进程启动，这里直接退出更新器，避免两个 GUI 同时运行卡死
+            self._log("更新完成，即将退出更新器并启动主程序…")
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(800, self._quit)
         else:
             QMessageBox.information(self, "提示", msg)
+
+    def _quit(self):
+        self.close()
+        QApplication.instance().quit()
 
 
 def main():

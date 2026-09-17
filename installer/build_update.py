@@ -16,7 +16,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from build_app import build_app, APP_NAME
-from app.config import APP_VERSION
+import re as _re
+_cfg = open(os.path.join(ROOT, "app", "config.py"), encoding="utf-8").read()
+_m = _re.search(r'APP_VERSION\s*=\s*"([^"]+)"', _cfg)
+APP_VERSION = _m.group(1) if _m else "0.0.0"
 
 DIST_APP = os.path.join(ROOT, "dist", APP_NAME)
 PREV_APP = os.path.join(ROOT, "dist", APP_NAME + "_prev")

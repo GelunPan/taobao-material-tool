@@ -1049,10 +1049,11 @@ class MainWindow(QMainWindow):
                 m = QMenu(v)
                 act_copy = m.addAction("复制图片")
                 act_del = m.addAction("删除这张图片")
-                act = m.exec(e.globalPos())
+                global_pos = lb.mapToGlobal(e)
+                act = m.exec(global_pos)
                 if act == act_copy:
                     QApplication.clipboard().setPixmap(pm)
-                    QToolTip.showText(e.globalPos(), "已复制", v, msecShowTime=1500)
+                    QToolTip.showText(global_pos, "已复制", v, msecShowTime=1500)
                 elif act == act_del:
                     delete_image(path)
                     v.accept()

@@ -838,7 +838,7 @@ class MainWindow(QMainWindow):
             QInputDialog, QMenu, QCheckBox, QWidget as _W
         )
         from .image_utils import scaled_pixmap
-        dlg = QDialog()
+        dlg = QDialog(self)  # 设parent为主窗口，主窗口关闭时自动关闭
         dlg.setWindowTitle("图片管理")
         dlg.resize(1200, 750)
 
@@ -1152,17 +1152,26 @@ class MainWindow(QMainWindow):
             if changed:
                 self.repo.save()
 
-        # 打开时显示加载动画（用singleShot延迟耗时操作，让动画先转起来）
+        # 打开时显示加载动画（用QThread后台执行dedupe，动画在主线程流畅旋转）
         loading_overlay.show_with_text("正在加载图片...\n（首次加载较慢，请稍候）")
         loading_overlay.raise_()
         QApplication.processEvents()
-        def _do_load():
-            # 打开时做一次去重（感知哈希很慢，不能每次render_grid都做）
-            dedupe_external_images()
+        from PyQt6.QtCore import QThread as _QThread, pyqtSignal as _pyqtSignal
+        class _DedupeWorker(_QThread):
+            finished_ok = _pyqtSignal()
+            def run(self):
+                try:
+                    dedupe_external_images()
+                except Exception:
+                    pass
+                self.finished_ok.emit()
+        _dedupe_worker = _DedupeWorker()
+        def _on_dedupe_done():
             refresh_cat_list()
             render_grid()
             loading_overlay.hide_overlay()
-        QTimer.singleShot(80, _do_load)
+        _dedupe_worker.finished_ok.connect(_on_dedupe_done)
+        _dedupe_worker.start()
 
         def render_grid():
             # 彻底清空旧内容
@@ -1500,6 +1509,8 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(80, _run_img_search)
                 return
             def _run_img_search():
+                # 用QThread后台执行感知哈希匹配，动画在主线程流畅旋转
+                from PyQt6.QtCore import QThread as _QThread2, pyqtSignal as _sig2
                 def _ph(im):
                     im = im.scaled(8, 8)
                     g = im.convertToFormat(_QI.Format.Format_Grayscale8)
@@ -1510,25 +1521,32 @@ class MainWindow(QMainWindow):
                         if v >= avg: b |= (1 << i)
                     return b
                 hq = _ph(state["img"])
-                best, bd = None, 999
-                from pathlib import Path as _P2
-                for f in _P2(self.repo.images_dir).glob("image_*"):
-                    ih = _ph(_QI(str(f)))
-                    d = bin(hq ^ ih).count("1")
-                    if d < bd:
-                        bd, best = d, str(f)
-                if best is None or bd > 10:
+                class _SearchWorker(_QThread2):
+                    got_result = _sig2(str, int)  # best_path, hamming_dist
+                    def run(self):
+                        best, bd = None, 999
+                        from pathlib import Path as _P2
+                        for f in _P2(self.repo.images_dir).glob("image_*"):
+                            ih = _ph(_QI(str(f)))
+                            d = bin(hq ^ ih).count("1")
+                            if d < bd:
+                                bd, best = d, str(f)
+                        self.got_result.emit(best or "", bd)
+                _search_worker = _SearchWorker()
+                def _on_search_done(best, bd):
                     loading_overlay.hide_overlay()
-                    result.setText("未找到相似图片")
-                    return
-                um = usage_map()
-                uses = um.get(best, [])
-                result.setText(f"匹配：{os.path.basename(best)}\n汉明距离{bd}，共使用 {len(uses)} 次")
-                result_list.clear()
-                for i, (shop, cat, idx) in enumerate(uses, 1):
-                    it = _LWI(f"{i}. {shop} / {cat} / 第{idx+1}条", result_list)
-                    it.setData(0, (shop, cat, idx))
-                loading_overlay.hide_overlay()  # 搜索完成，隐藏动画
+                    if not best or bd > 10:
+                        result.setText("未找到相似图片")
+                        return
+                    um = usage_map()
+                    uses = um.get(best, [])
+                    result.setText(f"匹配：{os.path.basename(best)}\n汉明距离{bd}，共使用 {len(uses)} 次")
+                    result_list.clear()
+                    for i, (shop, cat, idx) in enumerate(uses, 1):
+                        it = _LWI(f"{i}. {shop} / {cat} / 第{idx+1}条", result_list)
+                        it.setData(0, (shop, cat, idx))
+                _search_worker.got_result.connect(_on_search_done)
+                _search_worker.start()
             def jump(item):
                 data = item.data(0)
                 if not data:

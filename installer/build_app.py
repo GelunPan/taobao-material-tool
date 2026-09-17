@@ -164,6 +164,17 @@ def build_app():
             json.dump(data, f, ensure_ascii=False, indent=2)
         print(f"已打包示例数据：只保留「示例」店铺，引用图片 {copied} 张")
 
+    # 把更新器.exe 复制到主程序目录（安装时一起释放）
+    updater_src = os.path.join(ROOT, "installer", "更新器.exe")
+    if os.path.isfile(updater_src):
+        shutil.copy2(updater_src, os.path.join(DIST_APP, "更新器.exe"))
+        print("已包含更新器.exe")
+
+    # 写 version.txt
+    from app.config import APP_VERSION
+    with open(os.path.join(DIST_APP, "version.txt"), "w", encoding="utf-8") as f:
+        f.write(APP_VERSION)
+
     print("主程序已生成：", DIST_APP)
 
 

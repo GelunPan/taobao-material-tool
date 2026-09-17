@@ -1,51 +1,73 @@
 # -*- coding: utf-8 -*-
 """淘宝评价工具 —— 增量更新器。
 
-用法：
-  1. 开发者跑 build_update.py 生成 update.zip（只含改动文件）
-  2. 把 updater.exe（内嵌 update.zip）发给用户
-  3. 用户双击 updater.exe，自动：
-     - 找主程序安装位置（注册表/快捷方式/默认路径）
-     - 关闭正在运行的主程序
-     - 对比文件差异，覆盖新文件
-     - 跳过 data/ 用户数据
-     - 重启主程序
+用户双击桌面「更新器」快捷方式，自动：
+1. 找 tb_tools_update_V*.zip（先桌面，再下载目录）
+2. 读 zip 里的版本号，和当前版本比
+3. 版本低则拒绝，版本高则解压覆盖
+4. 重启主程序
 """
 import os
 import sys
+import re
 import time
 import shutil
 import zipfile
 import subprocess
-import ctypes
-from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QProgressBar,
     QVBoxLayout, QHBoxLayout, QMessageBox, QTextEdit,
 )
-from PyQt6.QtCore import QThread, pyqtSignal, Qt
+from PyQt6.QtCore import QThread, pyqtSignal
 
 APP_NAME = "淘宝评价工具"
 EXE_NAME = APP_NAME + ".exe"
-# 这些目录/文件不覆盖（用户数据）
 SKIP_PATHS = {"data"}
+UPDATE_PATTERN = re.compile(r"tb_tools_update_V([\d.]+)\.zip", re.IGNORECASE)
 
 
-def get_update_zip() -> str:
-    """冻结后从 sys._MEIPASS 取 update.zip；源码直跑则取同级。"""
-    if getattr(sys, "frozen", False):
-        return os.path.join(sys._MEIPASS, "update.zip")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "update.zip")
+def get_current_version(install_dir: str) -> str:
+    """读安装目录下的 version.txt。"""
+    p = os.path.join(install_dir, "version.txt")
+    if os.path.isfile(p):
+        try:
+            return open(p, encoding="utf-8").read().strip()
+        except Exception:
+            pass
+    return "0.0.0"
+
+
+def find_update_zip() -> str:
+    """找 tb_tools_update_V*.zip：先桌面，再下载目录。"""
+    import ctypes
+    # 桌面
+    buf = ctypes.create_unicode_buffer(260)
+    ctypes.windll.shell32.SHGetFolderPathW(None, 0x0000, None, 0, buf)
+    search_dirs = [buf.value] if buf.value else []
+    # 下载目录
+    dl = os.path.join(os.environ.get("USERPROFILE", ""), "Downloads")
+    if os.path.isdir(dl):
+        search_dirs.append(dl)
+    # 临时目录
+    search_dirs.append(os.environ.get("TEMP", ""))
+
+    best, best_ver = None, None
+    for d in search_dirs:
+        if not d or not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            m = UPDATE_PATTERN.match(f)
+            if m:
+                ver = m.group(1)
+                if best_ver is None or ver > best_ver:
+                    best_ver = ver
+                    best = os.path.join(d, f)
+    return best
 
 
 def find_install_dir() -> str:
-    """查找主程序安装位置，按优先级：
-    1. 注册表卸载项（HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall）
-    2. 桌面快捷方式 .lnk 的 TargetPath
-    3. 默认路径 %LOCALAPPDATA%\\淘宝评价工具
-    """
-    # 1. 注册表
+    """找主程序安装位置。"""
     try:
         import winreg
         key = winreg.OpenKey(
@@ -71,71 +93,76 @@ def find_install_dir() -> str:
     except Exception:
         pass
 
-    # 2. 桌面快捷方式
     try:
         import ctypes
         buf = ctypes.create_unicode_buffer(260)
         ctypes.windll.shell32.SHGetFolderPathW(None, 0x0000, None, 0, buf)
         lnk = os.path.join(buf.value, APP_NAME + ".lnk")
         if os.path.isfile(lnk):
-            # 用 PowerShell 读快捷方式目标
             ps = (
                 '$ws=New-Object -ComObject WScript.Shell;'
                 '$s=$ws.CreateShortcut("%s");'
                 'Write-Output $s.TargetPath' % lnk
             )
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
-                capture_output=True, text=True, timeout=5,
-            )
+            r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                               capture_output=True, text=True, timeout=5)
             target = r.stdout.strip()
             if target and os.path.isfile(target):
                 return os.path.dirname(target)
     except Exception:
         pass
 
-    # 3. 默认路径
     default = os.path.join(os.environ.get("LOCALAPPDATA", ""), APP_NAME)
     if os.path.isfile(os.path.join(default, EXE_NAME)):
         return default
-
     return ""
 
 
 def kill_main_process():
-    """关闭正在运行的主程序。"""
     try:
-        subprocess.run(
-            ["taskkill", "/IM", EXE_NAME, "/F"],
-            capture_output=True, timeout=10,
-        )
+        subprocess.run(["taskkill", "/IM", EXE_NAME, "/F"],
+                       capture_output=True, timeout=10)
         time.sleep(1)
     except Exception:
         pass
 
 
-def do_update(install_dir: str, log_fn, progress_cb) -> bool:
-    """执行更新：解压 update.zip 覆盖到 install_dir，跳过 data/。"""
-    update_zip = get_update_zip()
-    if not os.path.isfile(update_zip):
-        log_fn("未找到内置更新包 update.zip")
-        return False
+def do_update(install_dir, log_fn, progress_cb) -> tuple:
+    """返回 (成功?, 消息)。"""
+    # 1. 找更新包
+    zip_path = find_update_zip()
+    if not zip_path:
+        return False, "未找到更新包（tb_tools_update_V*.zip）\n请把更新包放到桌面或下载目录。"
 
-    log_fn(f"安装目录：{install_dir}")
-    log_fn("正在关闭主程序…")
-    kill_main_process()
+    log_fn(f"找到更新包：{zip_path}")
 
-    log_fn("正在解压更新包…")
-    tmp = os.path.join(os.environ.get("TEMP", "."), "tb_update_tmp")
-    if os.path.isdir(tmp):
-        shutil.rmtree(tmp, ignore_errors=True)
-    os.makedirs(tmp, exist_ok=True)
+    # 2. 读更新包版本
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        try:
+            new_ver = zf.read("version.txt").decode("utf-8").strip()
+        except KeyError:
+            new_ver = "999.0.0"  # 没版本号就当最新
+        log_fn(f"新版本：{new_ver}")
 
-    with zipfile.ZipFile(update_zip, "r") as zf:
+        cur_ver = get_current_version(install_dir)
+        log_fn(f"当前版本：{cur_ver}")
+
+        if new_ver <= cur_ver:
+            return False, f"当前已是最新版本（v{cur_ver}），无需更新。"
+
+        # 3. 关主程序
+        log_fn("正在关闭主程序…")
+        kill_main_process()
+
+        # 4. 解压
+        log_fn("正在解压更新包…")
+        tmp = os.path.join(os.environ.get("TEMP", "."), "tb_update_tmp")
+        if os.path.isdir(tmp):
+            shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp, exist_ok=True)
         names = zf.namelist()
         total = len(names)
         for i, name in enumerate(names):
-            # 跳过 data/ 用户数据
             parts = name.replace("\\", "/").split("/")
             if parts and parts[0] in SKIP_PATHS:
                 progress_cb(i + 1, total)
@@ -144,32 +171,35 @@ def do_update(install_dir: str, log_fn, progress_cb) -> bool:
             if i % 20 == 0 or i == total - 1:
                 progress_cb(i + 1, total)
 
+    # 5. 覆盖
     log_fn("正在覆盖文件…")
     copied = 0
     for root, dirs, files in os.walk(tmp):
         for f in files:
             src = os.path.join(root, f)
             rel = os.path.relpath(src, tmp)
-            dst = os.path.join(install_dir, rel)
-            # 跳过 data/
             if rel.split(os.sep)[0] in SKIP_PATHS:
                 continue
+            dst = os.path.join(install_dir, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            # 对比大小，相同就不覆盖
             if os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src):
                 continue
             shutil.copy2(src, dst)
             copied += 1
-
     shutil.rmtree(tmp, ignore_errors=True)
+
+    # 6. 写新版本号
+    with open(os.path.join(install_dir, "version.txt"), "w", encoding="utf-8") as f:
+        f.write(new_ver)
+
     log_fn(f"更新完成，覆盖了 {copied} 个文件")
 
-    # 重启主程序
+    # 7. 重启主程序
     exe = os.path.join(install_dir, EXE_NAME)
     if os.path.isfile(exe):
         log_fn("正在启动主程序…")
         subprocess.Popen([exe], cwd=install_dir)
-    return True
+    return True, f"已更新到 v{new_ver}"
 
 
 class UpdateWorker(QThread):
@@ -180,15 +210,13 @@ class UpdateWorker(QThread):
     def run(self):
         install_dir = find_install_dir()
         if not install_dir:
-            self.done.emit(False, "未找到主程序安装位置，请手动选择安装目录")
+            self.done.emit(False, "未找到主程序安装位置")
             return
         try:
-            ok = do_update(
-                install_dir,
-                log_fn=lambda m: self.log.emit(m),
-                progress_cb=lambda d, t: self.progress.emit(d, t),
-            )
-            self.done.emit(ok, install_dir)
+            ok, msg = do_update(install_dir,
+                                log_fn=lambda m: self.log.emit(m),
+                                progress_cb=lambda d, t: self.progress.emit(d, t))
+            self.done.emit(ok, msg)
         except Exception as e:
             self.done.emit(False, str(e))
 
@@ -197,7 +225,7 @@ class UpdaterWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("淘宝评价工具 - 更新")
-        self.setFixedSize(520, 380)
+        self.setFixedSize(520, 360)
         self._build_ui()
         self._run()
 
@@ -236,10 +264,10 @@ class UpdaterWindow(QWidget):
         self.bar.setValue(100)
         self.close_btn.setEnabled(True)
         if ok:
-            QMessageBox.information(self, "更新完成", f"已更新到最新版本！\n{msg}")
+            QMessageBox.information(self, "更新完成", msg)
             self.close()
         else:
-            QMessageBox.critical(self, "更新失败", msg)
+            QMessageBox.information(self, "提示", msg)
 
 
 def main():

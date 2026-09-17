@@ -1210,6 +1210,15 @@ class MainWindow(QMainWindow):
                         else:
                             checked_paths.discard(p)
                     cb.toggled.connect(_toggled)
+                    # 选择模式下：点击图片任意位置切换勾选（扩大点击范围）
+                    def _img_click(e, p=path, cbox=cb):
+                        if p in checked_paths:
+                            checked_paths.discard(p)
+                            cbox.setChecked(False)
+                        else:
+                            checked_paths.add(p)
+                            cbox.setChecked(True)
+                    lbl.mousePressEvent = _img_click
 
                 # 右下角蓝点角标
                 badge = QPushButton(str(len(uses)), img_wrap)
@@ -1239,8 +1248,16 @@ class MainWindow(QMainWindow):
                 def _menu(p=path):
                     m = QMenu(lbl)
                     a1 = m.addAction("查看大图")
-                    # 移动到分类子菜单
-                    sub = m.addMenu("移动到分类")
+                    # 决定要操作的图片列表：勾选模式下有勾选用勾选的（含当前图），否则用当前图
+                    if selecting["on"] and checked_paths:
+                        targets = list(checked_paths)
+                        if p not in targets:
+                            targets.append(p)
+                        menu_label = f"移动 {len(targets)} 张到分类"
+                    else:
+                        targets = [p]
+                        menu_label = "移动到分类"
+                    sub = m.addMenu(menu_label)
                     a_none = sub.addAction("未分类")
                     cat_acts = []
                     for c in cats:
@@ -1254,11 +1271,11 @@ class MainWindow(QMainWindow):
                     elif act == a2:
                         delete_image(p)
                     elif act == a_none:
-                        move_to_cat([p], "未分类")
+                        move_to_cat(targets, "未分类")
                     else:
                         for a, c in cat_acts:
                             if act == a:
-                                move_to_cat([p], c)
+                                move_to_cat(targets, c)
                                 break
                 lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 lbl.customContextMenuRequested.connect(lambda pos, pp=path: _menu(pp))

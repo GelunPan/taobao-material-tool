@@ -1349,8 +1349,24 @@ class MainWindow(QMainWindow):
                 um = usage_map()
                 uses = um.get(best, [])
                 result.setText(f"匹配：{os.path.basename(best)}（汉明距离{bd}） 共使用 {len(uses)} 次")
+                state["uses"] = uses
+                result_list.clear()
                 for i, (shop, cat, idx) in enumerate(uses, 1):
-                    _LWI(f"{i}. {shop} / {cat} / 第{idx+1}条", result_list)
+                    it = _LWI(f"{i}. {shop} / {cat} / 第{idx+1}条", result_list)
+                    it.setData(0, (shop, cat, idx))
+            def jump(item):
+                data = item.data(0)
+                if not data:
+                    return
+                shop, cat, idx = data
+                sd.close()
+                dlg.close()
+                self.select_shop_in_tree(shop)
+                if hasattr(self, "_set_category"):
+                    self._set_category(cat)
+                from PyQt6.QtCore import QTimer as _QTimer
+                _QTimer.singleShot(200, lambda: self.table.selectRow(idx))
+            result_list.itemDoubleClicked.connect(jump)
             search_btn2.clicked.connect(do_search)
             sd.setWindowFlags(sd.windowFlags() | _QtW.WindowType.WindowMinimizeButtonHint)
             sd.show()

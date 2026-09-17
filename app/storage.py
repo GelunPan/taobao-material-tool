@@ -189,9 +189,9 @@ class ShopRepository:
         self.shops[shop_name].setdefault(category or self.first_category(shop_name), [])
         # 自动记录创建时间（用于按月统计和显示）
         from datetime import datetime
-        if "created_at" not in record:
+        if not record.get("created_at"):
             record["created_at"] = datetime.now().strftime("%Y-%m")
-        if "created_time" not in record:
+        if not record.get("created_time"):
             record["created_time"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         self.shops[shop_name][category or self.first_category(shop_name)].append(record)
 

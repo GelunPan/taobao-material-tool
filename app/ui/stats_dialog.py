@@ -1,37 +1,36 @@
 # -*- coding: utf-8 -*-
-"""数据统计对话框：带动画的扇形图，统计每月各分类记录数和各分类评价图片数"""
+"""数据统计对话框：带动画的环形扇形图 + 概览卡片 + 数据明细，整体滚动"""
 import math
 from collections import defaultdict
 from datetime import datetime
 
-from PyQt6.QtCore import (Qt, QPropertyAnimation, QEasingCurve, QRectF, QPointF,
-                          pyqtProperty, QTimer)
+from PyQt6.QtCore import (Qt, QPropertyAnimation, QEasingCurve, QRectF,
+                          pyqtProperty, QTimer, pyqtSignal)
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-                             QWidget, QGridLayout, QScrollArea, QFrame)
+                             QWidget, QGridLayout, QScrollArea, QFrame, QSizePolicy)
 
 
-# 好看的配色方案（柔和但有区分度）
+# 配色方案（现代、柔和有区分度）
 PIE_COLORS = [
-    QColor("#5B8FF9"), QColor("#5AD8A6"), QColor("#5D7092"), QColor("#F6BD16"),
-    QColor("#E8684A"), QColor("#6DC8EC"), QColor("#9270CA"), QColor("#FF9D4D"),
-    QColor("#FF99C3"), QColor("#269A99"), QColor("#A0A0FF"), QColor("#7DAE2F"),
+    QColor("#5B8FF9"), QColor("#5AD8A6"), QColor("#F6BD16"), QColor("#E8684A"),
+    QColor("#6DC8EC"), QColor("#9270CA"), QColor("#FF9D4D"), QColor("#FF99C3"),
+    QColor("#269A99"), QColor("#A0A0FF"), QColor("#7DAE2F"), QColor("#FF6B6B"),
 ]
 
 
 class AnimatedPieChart(QWidget):
-    """带动画的扇形图：依次展开每个扇形，鼠标悬停高亮。"""
+    """带动画的环形扇形图：依次展开每个扇形，鼠标悬停高亮。"""
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self._title = title
-        self._data = []  # [(label, value, color), ...]
-        self._progress = 0.0  # 动画进度 0-1
+        self._data = []
+        self._progress = 0.0
         self._hover_index = -1
-        self.setMinimumSize(320, 320)
+        self.setMinimumSize(280, 280)
         self.setMouseTracking(True)
 
-        # 动画
         self._anim = QPropertyAnimation(self, b"progress", self)
         self._anim.setDuration(900)
         self._anim.setStartValue(0.0)
@@ -48,7 +47,6 @@ class AnimatedPieChart(QWidget):
         self.update()
 
     def set_data(self, data: list):
-        """data: [(label, value), ...]"""
         total = sum(v for _, v in data) or 1
         self._data = [(label, value, PIE_COLORS[i % len(PIE_COLORS)])
                       for i, (label, value) in enumerate(data)]
@@ -58,9 +56,9 @@ class AnimatedPieChart(QWidget):
         QTimer.singleShot(100, self._anim.start)
 
     def _pie_rect(self):
-        size = min(self.width(), self.height()) - 40
+        size = min(self.width(), self.height()) - 30
         x = (self.width() - size) / 2
-        y = (self.height() - size) / 2 + 10
+        y = (self.height() - size) / 2 + 8
         return QRectF(x, y, size, size)
 
     def paintEvent(self, event):
@@ -68,14 +66,14 @@ class AnimatedPieChart(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # 标题
-        painter.setPen(QColor("#333333"))
-        painter.setFont(QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
-        painter.drawText(QRectF(0, 0, self.width(), 30),
+        painter.setPen(QColor("#1f1f1f"))
+        painter.setFont(QFont("Microsoft YaHei", 13, QFont.Weight.Bold))
+        painter.drawText(QRectF(0, 0, self.width(), 28),
                          Qt.AlignmentFlag.AlignCenter, self._title)
 
         if not self._data:
-            painter.setPen(QColor("#999999"))
-            painter.setFont(QFont("Microsoft YaHei", 10))
+            painter.setPen(QColor("#bbb"))
+            painter.setFont(QFont("Microsoft YaHei", 11))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "暂无数据")
             return
 
@@ -83,73 +81,63 @@ class AnimatedPieChart(QWidget):
         center = rect.center()
         radius = rect.width() / 2
 
-        # 计算每个扇形的角度
-        start_angle = 90  # 从顶部开始
+        start_angle = 90
         total_draw = self._total * self._progress
-
         drawn = 0
+
         for i, (label, value, color) in enumerate(self._data):
             if drawn >= total_draw:
                 break
             slice_value = min(value, total_draw - drawn)
             span_angle = (slice_value / self._total) * 360
 
-            # 悬停的扇形向外偏移
-            offset = 0
+            ox = oy = 0
             if i == self._hover_index:
                 mid_angle = math.radians(start_angle - span_angle / 2)
-                offset = 8
-                ox = math.cos(mid_angle) * offset
-                oy = -math.sin(mid_angle) * offset
-            else:
-                ox = oy = 0
+                ox = math.cos(mid_angle) * 8
+                oy = -math.sin(mid_angle) * 8
 
-            # 绘制扇形
             path = QPainterPath()
             path.moveTo(center.x() + ox, center.y() + oy)
             path.arcTo(QRectF(rect.x() + ox, rect.y() + oy,
                               rect.width(), rect.height()),
                        start_angle, -span_angle)
             path.closeSubpath()
-
             painter.fillPath(path, color)
 
-            # 百分比文字（只在扇形足够大时显示）
             if span_angle > 25 and self._progress > 0.8:
                 pct = value / self._total * 100
                 if pct >= 3:
                     mid_angle = math.radians(start_angle - span_angle / 2)
-                    text_r = radius * 0.6
+                    text_r = radius * 0.62
                     tx = center.x() + math.cos(mid_angle) * text_r + ox
                     ty = center.y() - math.sin(mid_angle) * text_r + oy
                     painter.setPen(QColor("#ffffff"))
-                    painter.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.Bold))
-                    painter.drawText(QRectF(tx - 25, ty - 10, 50, 20),
+                    painter.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.Bold))
+                    painter.drawText(QRectF(tx - 28, ty - 12, 56, 24),
                                      Qt.AlignmentFlag.AlignCenter, f"{pct:.0f}%")
 
             start_angle -= span_angle
             drawn += slice_value
 
-        # 中心圆（做成环形图更好看）
-        inner_r = radius * 0.45
+        # 中心圆
+        inner_r = radius * 0.48
         painter.setBrush(QColor("#ffffff"))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(center, inner_r, inner_r)
 
-        # 中心文字：总数
-        painter.setPen(QColor("#333333"))
-        painter.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
-        painter.drawText(QRectF(center.x() - 50, center.y() - 25, 100, 30),
+        # 中心文字
+        painter.setPen(QColor("#1f1f1f"))
+        painter.setFont(QFont("Microsoft YaHei", 20, QFont.Weight.Bold))
+        painter.drawText(QRectF(center.x() - 60, center.y() - 28, 120, 32),
                          Qt.AlignmentFlag.AlignCenter, str(self._total))
-        painter.setFont(QFont("Microsoft YaHei", 9))
-        painter.setPen(QColor("#999999"))
-        painter.drawText(QRectF(center.x() - 50, center.y() + 5, 100, 20),
+        painter.setFont(QFont("Microsoft YaHei", 10))
+        painter.setPen(QColor("#999"))
+        painter.drawText(QRectF(center.x() - 60, center.y() + 6, 120, 20),
                          Qt.AlignmentFlag.AlignCenter, "总计")
-
         painter.end()
 
     def mouseMoveEvent(self, event):
-        # 检测鼠标悬停在哪个扇形上
         rect = self._pie_rect()
         center = rect.center()
         dx = event.position().x() - center.x()
@@ -157,22 +145,19 @@ class AnimatedPieChart(QWidget):
         dist = math.sqrt(dx * dx + dy * dy)
         radius = rect.width() / 2
 
-        if radius * 0.45 < dist < radius:
+        if radius * 0.48 < dist < radius:
             angle = math.degrees(math.atan2(-dy, dx))
             if angle < 0:
                 angle += 360
-            # 从顶部(90度)开始，顺时针
             start_angle = 90
             found = -1
             for i, (label, value, color) in enumerate(self._data):
                 span_angle = (value / self._total) * 360
-                end_angle = start_angle - span_angle
-                # 归一化角度比较
                 a = (start_angle - angle) % 360
                 if a <= span_angle:
                     found = i
                     break
-                start_angle = end_angle
+                start_angle -= span_angle
             self._hover_index = found
         else:
             self._hover_index = -1
@@ -183,109 +168,167 @@ class AnimatedPieChart(QWidget):
         self.update()
 
 
+class StatCard(QFrame):
+    """现代风格统计卡片：左侧彩色竖条 + 标题 + 大数值"""
+
+    def __init__(self, title: str, color: str, parent=None):
+        super().__init__(parent)
+        self._color = color
+        self.setStyleSheet(f"""
+            QFrame {{
+                background: #ffffff;
+                border: 1px solid #f0f0f0;
+                border-radius: 12px;
+            }}
+            QFrame:hover {{
+                border: 1px solid {color}60;
+            }}
+        """)
+        self.setFixedHeight(88)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 左侧彩色竖条
+        bar = QFrame()
+        bar.setFixedWidth(4)
+        bar.setStyleSheet(f"background: {color}; border-top-left-radius: 12px; border-bottom-left-radius: 12px;")
+        layout.addWidget(bar)
+
+        # 内容区
+        content = QVBoxLayout()
+        content.setContentsMargins(16, 14, 16, 14)
+        content.setSpacing(4)
+
+        self.title_lbl = QLabel(title)
+        self.title_lbl.setStyleSheet("color: #8c8c8c; font-size: 13px;")
+        content.addWidget(self.title_lbl)
+
+        self.value_lbl = QLabel("0")
+        self.value_lbl.setStyleSheet(f"color: {color}; font-size: 30px; font-weight: bold;")
+        content.addWidget(self.value_lbl)
+
+        layout.addLayout(content, 1)
+
+    def set_value(self, value: str):
+        self.value_lbl.setText(value)
+
+
 class StatsDialog(QDialog):
-    """数据统计对话框：两个扇形图 + 图例 + 数据明细"""
+    """数据统计对话框：整体滚动，现代风格"""
 
     def __init__(self, repo, parent=None):
         super().__init__(parent)
         self.repo = repo
         self.setWindowTitle("📊 数据统计")
-        self.resize(900, 680)
-        self.setMinimumSize(760, 560)
+        self.resize(880, 720)
+        self.setMinimumSize(760, 600)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 16, 20, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # 顶部：标题 + 店铺选择
-        top = QHBoxLayout()
+        # ===== 顶部固定栏：标题 + 选择器 =====
+        top_bar = QFrame()
+        top_bar.setStyleSheet("background: #ffffff; border-bottom: 1px solid #f0f0f0;")
+        top_bar.setFixedHeight(64)
+        top_layout = QHBoxLayout(top_bar)
+        top_layout.setContentsMargins(24, 0, 24, 0)
+        top_layout.setSpacing(16)
+
         title = QLabel("📊 数据统计")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #1677ff;")
-        top.addWidget(title)
-        top.addStretch()
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #1f1f1f;")
+        top_layout.addWidget(title)
+        top_layout.addStretch()
 
-        top.addWidget(QLabel("店铺："))
+        top_layout.addWidget(QLabel("店铺："))
         self.shop_combo = QComboBox()
-        self.shop_combo.setStyleSheet("QComboBox { padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; min-width: 140px; }")
+        self.shop_combo.setStyleSheet(
+            "QComboBox { padding: 7px 14px; border: 1px solid #d9d9d9; border-radius: 8px; "
+            "min-width: 140px; background: #fff; }"
+            "QComboBox:hover { border-color: #409eff; }"
+        )
         self.shop_combo.currentIndexChanged.connect(self._refresh)
-        top.addWidget(self.shop_combo)
+        top_layout.addWidget(self.shop_combo)
 
-        top.addWidget(QLabel("月份："))
+        top_layout.addWidget(QLabel("月份："))
         self.month_combo = QComboBox()
-        self.month_combo.setStyleSheet("QComboBox { padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; min-width: 120px; }")
+        self.month_combo.setStyleSheet(
+            "QComboBox { padding: 7px 14px; border: 1px solid #d9d9d9; border-radius: 8px; "
+            "min-width: 120px; background: #fff; }"
+            "QComboBox:hover { border-color: #409eff; }"
+        )
         self.month_combo.currentIndexChanged.connect(self._refresh)
-        top.addWidget(self.month_combo)
+        top_layout.addWidget(self.month_combo)
 
-        root.addLayout(top)
+        root.addWidget(top_bar)
 
-        # 分割线
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("color: #e8e8e8;")
-        root.addWidget(line)
+        # ===== 整体滚动区域 =====
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: #f5f7fa; }")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        # 统计概览卡片：平均图片数、平均字数
+        content_widget = QWidget()
+        content_widget.setStyleSheet("background: #f5f7fa;")
+        self.content_layout = QVBoxLayout(content_widget)
+        self.content_layout.setContentsMargins(24, 20, 24, 24)
+        self.content_layout.setSpacing(16)
+
+        # 概览卡片
         cards_row = QHBoxLayout()
         cards_row.setSpacing(16)
+        self.card_avg_images = StatCard("📷 平均图片数（每条记录）", "#5B8FF9")
+        self.card_avg_words = StatCard("📝 平均字数（每条评价）", "#5AD8A6")
+        cards_row.addWidget(self.card_avg_images, 1)
+        cards_row.addWidget(self.card_avg_words, 1)
+        self.content_layout.addLayout(cards_row)
 
-        self.card_avg_images = self._make_stat_card("📷 平均图片数", "0", "#5B8FF9")
-        self.card_avg_words = self._make_stat_card("📝 平均字数", "0", "#5AD8A6")
-        cards_row.addWidget(self.card_avg_images)
-        cards_row.addWidget(self.card_avg_words)
-        root.addLayout(cards_row)
+        # 扇形图卡片
+        charts_card = QFrame()
+        charts_card.setStyleSheet("background: #ffffff; border: 1px solid #f0f0f0; border-radius: 12px;")
+        charts_layout = QVBoxLayout(charts_card)
+        charts_layout.setContentsMargins(20, 16, 20, 20)
+        charts_layout.setSpacing(8)
 
-        # 两个扇形图并排
+        charts_title = QLabel("📈 分类分布")
+        charts_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #1f1f1f;")
+        charts_layout.addWidget(charts_title)
+
         charts_row = QHBoxLayout()
         charts_row.setSpacing(20)
-
         self.pie_records = AnimatedPieChart("每月各分类记录数")
         self.pie_images = AnimatedPieChart("各分类评价图片数")
         charts_row.addWidget(self.pie_records, 1)
         charts_row.addWidget(self.pie_images, 1)
-        root.addLayout(charts_row, 1)
+        charts_layout.addLayout(charts_row, 1)
+        self.content_layout.addWidget(charts_card)
 
-        # 底部：数据明细（可滚动）
-        detail_label = QLabel("📋 数据明细")
-        detail_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #333;")
-        root.addWidget(detail_label)
+        # 数据明细卡片
+        detail_card = QFrame()
+        detail_card.setStyleSheet("background: #ffffff; border: 1px solid #f0f0f0; border-radius: 12px;")
+        detail_layout = QVBoxLayout(detail_card)
+        detail_layout.setContentsMargins(20, 16, 20, 20)
+        detail_layout.setSpacing(12)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: 1px solid #e8e8e8; border-radius: 6px; background: #fafafa; }")
+        detail_title = QLabel("📋 数据明细")
+        detail_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #1f1f1f;")
+        detail_layout.addWidget(detail_title)
+
         self.detail_widget = QWidget()
         self.detail_layout = QGridLayout(self.detail_widget)
-        self.detail_layout.setSpacing(8)
-        self.detail_layout.setContentsMargins(12, 12, 12, 12)
-        scroll.setWidget(self.detail_widget)
+        self.detail_layout.setSpacing(0)
+        self.detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.addWidget(self.detail_widget)
+
+        self.content_layout.addWidget(detail_card)
+        self.content_layout.addStretch()
+
+        scroll.setWidget(content_widget)
         root.addWidget(scroll, 1)
 
         self._load_shops()
-
-    def _make_stat_card(self, title: str, value: str, color: str) -> QFrame:
-        """创建一个统计概览卡片"""
-        card = QFrame()
-        card.setStyleSheet(f"""
-            QFrame {{
-                background: {color}15;
-                border: 1px solid {color}40;
-                border-radius: 10px;
-                padding: 12px 20px;
-            }}
-        """)
-        layout = QVBoxLayout(card)
-        layout.setSpacing(4)
-        layout.setContentsMargins(16, 12, 16, 12)
-
-        title_lbl = QLabel(title)
-        title_lbl.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
-        layout.addWidget(title_lbl)
-
-        value_lbl = QLabel(value)
-        value_lbl.setStyleSheet(f"color: {color}; font-size: 28px; font-weight: bold;")
-        value_lbl.setObjectName("card_value")
-        layout.addWidget(value_lbl)
-
-        return card
 
     def _load_shops(self):
         self.shop_combo.clear()
@@ -295,7 +338,6 @@ class StatsDialog(QDialog):
             self._load_months(shops[0])
 
     def _load_months(self, shop):
-        """收集该店铺所有记录的月份"""
         months = set()
         for cat, records in self.repo.shops.get(shop, {}).items():
             for r in records:
@@ -321,14 +363,14 @@ class StatsDialog(QDialog):
         records_by_cat = defaultdict(int)
         for cat, records in self.repo.shops.get(shop, {}).items():
             for r in records:
-                m = r.get("created_at", "未知")
+                m = r.get("created_at", "")
                 if m == month:
                     records_by_cat[cat] += 1
         records_data = [(cat, cnt) for cat, cnt in sorted(records_by_cat.items(),
                                                            key=lambda x: -x[1]) if cnt > 0]
         self.pie_records.set_data(records_data)
 
-        # 统计2：各分类的评价图片数（所有月份）
+        # 统计2：各分类的评价图片数
         images_by_cat = defaultdict(int)
         for cat, records in self.repo.shops.get(shop, {}).items():
             for r in records:
@@ -338,60 +380,60 @@ class StatsDialog(QDialog):
                                                           key=lambda x: -x[1]) if cnt > 0]
         self.pie_images.set_data(images_data)
 
-        # 计算平均图片数和平均字数（该店铺所有记录）
+        # 计算平均值
         all_records = []
         for cat, records in self.repo.shops.get(shop, {}).items():
             all_records.extend(records)
         total_count = len(all_records) or 1
         total_images = sum(len(r.get("image_paths") or []) for r in all_records)
         total_words = sum(len(r.get("review") or "") for r in all_records)
-        avg_images = total_images / total_count
-        avg_words = total_words / total_count
-
-        # 更新卡片
-        self.card_avg_images.findChild(QLabel, "card_value").setText(f"{avg_images:.1f}")
-        self.card_avg_words.findChild(QLabel, "card_value").setText(f"{avg_words:.0f}")
+        self.card_avg_images.set_value(f"{total_images / total_count:.1f}")
+        self.card_avg_words.set_value(f"{total_words / total_count:.0f}")
 
         # 数据明细
-        # 清空旧内容
         while self.detail_layout.count():
             item = self.detail_layout.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
 
-        # 表头
         headers = ["分类", f"{month} 记录数", "评价图片数", "记录占比", "图片占比"]
         for col, h in enumerate(headers):
             lbl = QLabel(h)
-            lbl.setStyleSheet("font-weight: bold; color: #555; padding: 4px 8px;")
+            lbl.setStyleSheet("color: #595959; font-size: 13px; font-weight: bold; "
+                               "padding: 10px 12px; background: #fafafa; "
+                               "border-bottom: 1px solid #f0f0f0;")
             self.detail_layout.addWidget(lbl, 0, col)
 
         total_records = sum(cnt for _, cnt in records_data) or 1
-        total_images = sum(cnt for _, cnt in images_data) or 1
+        total_images_sum = sum(cnt for _, cnt in images_data) or 1
         all_cats = sorted(set(list(records_by_cat.keys()) + list(images_by_cat.keys())))
 
         for row, cat in enumerate(all_cats, 1):
             rc = records_by_cat.get(cat, 0)
             ic = images_by_cat.get(cat, 0)
             color = PIE_COLORS[all_cats.index(cat) % len(PIE_COLORS)]
+            bg = "#ffffff" if row % 2 == 1 else "#fafbfc"
 
-            # 分类名（带颜色点）
             cat_lbl = QLabel(f"  ● {cat}")
-            cat_lbl.setStyleSheet(f"color: {color.name()}; font-weight: bold; padding: 4px 8px;")
+            cat_lbl.setStyleSheet(f"color: {color.name()}; font-size: 13px; font-weight: bold; "
+                                  f"padding: 10px 12px; background: {bg}; border-bottom: 1px solid #f5f5f5;")
             self.detail_layout.addWidget(cat_lbl, row, 0)
 
             for col, val in enumerate([rc, ic, f"{rc/total_records*100:.1f}%",
-                                        f"{ic/total_images*100:.1f}%"], 1):
+                                        f"{ic/total_images_sum*100:.1f}%"], 1):
                 lbl = QLabel(str(val))
-                lbl.setStyleSheet("color: #333; padding: 4px 8px;")
+                lbl.setStyleSheet(f"color: #262626; font-size: 13px; padding: 10px 12px; "
+                                  f"background: {bg}; border-bottom: 1px solid #f5f5f5;")
                 self.detail_layout.addWidget(lbl, row, col)
 
         # 合计行
         total_lbl = QLabel("  合计")
-        total_lbl.setStyleSheet("font-weight: bold; color: #1677ff; padding: 4px 8px; border-top: 1px solid #ddd;")
+        total_lbl.setStyleSheet("color: #1677ff; font-size: 13px; font-weight: bold; "
+                                "padding: 12px; background: #f0f7ff; border-top: 1px solid #d6e8ff;")
         self.detail_layout.addWidget(total_lbl, len(all_cats) + 1, 0)
-        for col, val in enumerate([total_records, total_images, "100%", "100%"], 1):
+        for col, val in enumerate([total_records, total_images_sum, "100%", "100%"], 1):
             lbl = QLabel(str(val))
-            lbl.setStyleSheet("font-weight: bold; color: #1677ff; padding: 4px 8px; border-top: 1px solid #ddd;")
+            lbl.setStyleSheet("color: #1677ff; font-size: 13px; font-weight: bold; "
+                              "padding: 12px; background: #f0f7ff; border-top: 1px solid #d6e8ff;")
             self.detail_layout.addWidget(lbl, len(all_cats) + 1, col)

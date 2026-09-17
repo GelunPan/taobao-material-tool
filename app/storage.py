@@ -244,12 +244,18 @@ class ShopRepository:
 
 
 def new_blank_record() -> dict:
-    """创建一条空白记录（所有字段为空，多图字段为空列表）"""
+    """创建一条空白记录（所有字段为空，多图字段为空列表，创建时间自动填充）"""
     from . import config
+    from datetime import datetime
     record = {}
+    now = datetime.now()
     for field in config.RECORD_FIELDS:
         if field in config.MULTI_IMAGE_FIELDS:
             record[field] = []
+        elif field == "created_time":
+            record[field] = now.strftime("%Y-%m-%d %H:%M")
+        elif field == "created_at":
+            record[field] = now.strftime("%Y-%m")
         elif field in config.SINGLE_IMAGE_FIELDS:
             record[field] = ""
         else:
